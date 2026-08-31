@@ -38,7 +38,11 @@ function mostRecent(prs: CompetitorPr[]): CompetitorPr | null {
 }
 
 function derive(s: Signals, today: Date): DerivedCtx {
-  const comp = s.competitors.filter((c) => !c.authorIsIgnoredBot);
+  // Maintenance-bot exclusion suppresses only LOW-confidence incidental
+  // mentions. A HIGH-confidence competitor (officially linked, or a closing
+  // "Fixes #N" reference) always counts, whoever the author is — an automation
+  // account can still open a real, issue-closing implementation PR.
+  const comp = s.competitors.filter((c) => c.highConfidence || !c.authorIsIgnoredBot);
   const openComp = comp.filter((c) => c.state === "OPEN");
   const highConf = comp.filter((c) => c.highConfidence);
 

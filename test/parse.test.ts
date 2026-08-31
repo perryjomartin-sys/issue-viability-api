@@ -132,6 +132,27 @@ describe("parseGraphQL — competitors", () => {
     expect(s.competitors[0]).toMatchObject({ number: 777, highConfidence: true });
   });
 
+  it("maintenance bot with a closing reference => authorIsIgnoredBot AND highConfidence (G0: still counts)", () => {
+    const s = parseGraphQL(
+      repo(
+        issue([
+          {
+            __typename: "CrossReferencedEvent",
+            createdAt: "2026-08-20T00:00:00Z",
+            willCloseTarget: true,
+            source: pr({ number: 808, author: { __typename: "Bot", login: "dependabot[bot]" } }),
+          },
+        ]),
+      ),
+    );
+    expect(s.competitors[0]).toMatchObject({
+      number: 808,
+      authorIsIgnoredBot: true,
+      highConfidence: true,
+      linkKind: "closing-reference",
+    });
+  });
+
   it("deduplicates multiple events for the same PR number", () => {
     const nodes = [
       { __typename: "CrossReferencedEvent", createdAt: "2026-08-18T00:00:00Z", willCloseTarget: false, source: pr({ number: 507 }) },

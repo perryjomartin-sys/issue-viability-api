@@ -165,3 +165,76 @@ describe("http app", () => {
     expect(((await res.json()) as any).recommendation).toBe("GO");
   });
 });
+
+describe("G4 — RATE_LIMIT_FLOOR enforcement", () => {
+  const lowBudget = (resetAt: string) =>
+    makeSignals({ rateLimit: { cost: 1, remaining: 10, resetAt } }); // remaining 10 < floor 150
+
+  it("stops live calls and returns 503 + Retry-After once budget is below the floor (no cache)", async () => {
+    let calls = 0;
+    let clock = TODAY.getTime();
+    const resetAt = new Date(clock + 30 * 60_000).toISOString();
+    const app = createApp(
+      {},
+      { now: () => new Date(clock), signalSource: async () => { calls++; return lowBudget(resetAt); } },
+    );
+
+    const first = await post(app, { repo: "a/b", issue: 1 });
+    expect(first.status).toBe(200);
+    expect(calls).toBe(1);
+
+    // distinct issue: no cache to fall back on
+    const blocked = await post(app, { repo: "a/b", issue: 2 });
+    expect(blocked.status).toBe(503);
+    expect(Number(blocked.headers.get("retry-after"))).toBeGreaterThan(0);
+    expect(((await blocked.json()) as any).error).toBe("rate_limited");
+    expect(calls).toBe(1); // second request never hit the signal source
+  });
+
+  it("below the floor, serves a valid stale cache instead of 503", async () => {
+    let calls = 0;
+    let clock = TODAY.getTime();
+    const resetAt = new Date(clock + 60 * 60_000).toISOString();
+    const app = createApp(
+      { },
+      { now: () => new Date(clock), signalSource: async () => { calls++; return lowBudget(resetAt); } },
+    );
+
+    const first = await post(app, { repo: "a/b", issue: 1 });
+    expect(((await first.json()) as any).recommendation).toBe("GO");
+    expect(calls).toBe(1);
+
+    clock += 700_000; // into the stale window
+    const stale = await post(app, { repo: "a/b", issue: 1 });
+    expect(stale.status).toBe(200);
+    expect(stale.headers.get("x-cache")).toBe("stale");
+    const body = (await stale.json()) as any;
+    expect(body.recommendation).toBe("CAUTION"); // GO downgraded for stale delivery
+    expect(body.data_quality).toBe("stale");
+    expect(calls).toBe(1); // still no new live call
+  });
+
+  it("resumes live calls after the rate-limit window resets", async () => {
+    let calls = 0;
+    let clock = TODAY.getTime();
+    const resetAt = new Date(clock + 1000 * 1000).toISOString();
+    const app = createApp(
+      {},
+      {
+        now: () => new Date(clock),
+        signalSource: async () => {
+          calls++;
+          return makeSignals({ rateLimit: { cost: 1, remaining: 10, resetAt } });
+        },
+      },
+    );
+
+    await post(app, { repo: "a/b", issue: 1 }); // records low budget
+    expect(calls).toBe(1);
+
+    clock += 1_000_000 + 1; // past resetAt
+    const after = await post(app, { repo: "a/b", issue: 2 });
+    expect(after.status).toBe(200);
+    expect(calls).toBe(2); // budget window reset -> live call allowed again
+  });
+});

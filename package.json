@@ -12,6 +12,11 @@
   },
   "dependencies": {
     "@hono/node-server": "^1.13.7",
+    "@x402/core": "2.24.0",
+    "@x402/evm": "2.24.0",
+    "@x402/extensions": "2.24.0",
+    "@x402/hono": "2.24.0",
+    "@x402/paywall": "2.24.0",
     "hono": "^4.6.14"
   },
   "devDependencies": {

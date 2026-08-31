@@ -31,17 +31,17 @@ of `(repo, issue, GitHub state, UTC date)`.
 
 ## Status
 
-Phase-1 build, steps **A–F** of the agreed plan. Steps done:
+Phase-1 build, steps **A–G** of the agreed plan. Steps done:
 
 | Step | What | State |
 |---|---|---|
 | A | Deterministic GitHub client (`src/github.ts`, `src/parse.ts`, `src/query.ts`) | done |
 | B | Decision engine (`src/decision.ts`) | done |
-| C | Unit tests (`test/*.test.ts`, `node:test`) | 100 passing |
+| C | Unit tests (`test/*.test.ts`, `node:test`) | 113 passing |
 | D | Real-world evaluation (`test/evaluation.test.ts`, 23 recorded GitHub fixtures) | false-GO = 0 |
-| E | Local endpoint (`src/app.ts` + `src/server.ts`, Hono, **payments OFF**) | runs |
+| E | Local endpoint (`src/app.ts` + `src/server.ts`, Hono) | runs |
 | F | Independent GPT-5.6 diff review | **done — findings F1–F5 remediated (see HANDOFF.md)** |
-| G | Base-Sepolia x402 V2 | **not started (awaiting go-ahead)** |
+| G | Base-Sepolia x402 V2 payment gate (`src/payments.ts`) | **local implementation done; not deployed** |
 
 No deployment. No paid Cloudflare plan. No `@x402/*` packages installed yet.
 
@@ -107,10 +107,11 @@ A GraphQL response that returns usable `data.repository` alongside a non-empty
 | — | none of the above | GO |
 
 A `GO` is **never** emitted on incomplete or stale data — it is downgraded to
-`CAUTION`. Only PRs from an allowlist of **maintenance** bots (Dependabot,
-Renovate, …) are excluded from competitor counts (`isIgnoredMaintenanceBot`,
-`src/bots.ts`); an unknown bot — e.g. an autonomous coding agent — counts as a
-real competitor, so its active high-confidence closing PR can still drive
+`CAUTION`. Maintenance-bot filtering (`isIgnoredMaintenanceBot`, `src/bots.ts`)
+suppresses only **low-confidence incidental mentions** from an allowlist
+(Dependabot, Renovate, …). A **high-confidence** competitor — officially linked
+or a `willCloseTarget` closing reference — always counts, whoever opened it:
+Dependabot or an autonomous coding agent with a real closing PR still drives
 `REJECT`.
 
 Tunable constants live in one place: `src/config.ts`.
@@ -134,13 +135,46 @@ fallback when GitHub fails; older is discarded. `src/cache.ts` has an in-memory
 implementation for local runs; production swaps in Workers KV with the same
 contract.
 
-## Deployment (step G — not done)
+## x402 V2 payment gate (step G)
+
+`POST /v1/check` can be gated behind an [x402](https://x402.org) V2 payment on
+**Base Sepolia testnet** (`eip155:84532`). OFF unless `X402_ENABLED` is set.
+No mainnet, no real USDC — the network is hard-coded and the code refuses any
+other.
+
+```bash
+X402_ENABLED=true \
+X402_PAY_TO=0xYourBaseSepoliaAddress \
+X402_PRICE='$0.005' \
+X402_RESOURCE_URL=https://your-host/v1/check \
+GITHUB_TOKEN=ghp_xxx \
+npm run dev
+```
+
+| env | meaning | default |
+|---|---|---|
+| `X402_ENABLED` | turn the gate on (`true`/`1`) | off |
+| `X402_PAY_TO` | EVM address that receives testnet USDC (**required when on**) | — |
+| `X402_PRICE` | price per call | `$0.005` |
+| `X402_FACILITATOR_URL` | x402 facilitator | `https://x402.org/facilitator` |
+| `X402_RESOURCE_URL` | public URL, for discovery metadata | — |
+| `X402_BAZAAR` | emit the x402 Bazaar discovery extension | on |
+
+Unpaid API requests get **402** with a `Payment-Required` header (x402 V2) and a
+JSON body; browsers get the paywall page. `GET /` and `GET /health` are never
+gated. Built on `@x402/hono`, `@x402/core`, `@x402/evm`, `@x402/extensions`
+(Bazaar), `@x402/paywall` — all pinned to `2.24.0`.
+
+### Rate-limit floor (enforced)
+
+Once a fetch reports the GitHub token's remaining GraphQL budget below
+`CONFIG.RATE_LIMIT_FLOOR` (150), the app stops making live calls until the rate
+window resets: it serves a valid **stale cache** if one exists, otherwise
+**503 + `Retry-After`**. State is per process here; a production Worker would
+hold it in KV / a Durable Object.
+
+## Deployment (not done)
 
 Target: one Cloudflare Worker, Hono, Workers KV for the cache, native Rate
-Limiting binding, x402 **V2** payment middleware (`@x402/hono`, headers
-`PAYMENT-REQUIRED` / `PAYMENT-SIGNATURE` / `PAYMENT-RESPONSE`) on `POST /v1/check`
-priced at `$0.005`, `base-sepolia` (`eip155:84532`) first. See `HANDOFF.md`.
-
-`CONFIG.RATE_LIMIT_FLOOR` (150) is **defined but not enforced** in this build —
-enforcing it (serve cache-only once the token's `rateLimit.remaining` drops
-below the floor, until `resetAt`) is a step-G task for the Worker/KV layer.
+Limiting binding, the x402 V2 middleware above on `POST /v1/check`,
+`base-sepolia` first. Not deployed — see `HANDOFF.md`.

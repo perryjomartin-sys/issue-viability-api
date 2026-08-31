@@ -161,17 +161,67 @@ describe("decision engine — recommendations", () => {
     expect(a.reasons).toContain("assessment is based on incomplete data");
   });
 
-  it("maintenance-bot competitor (authorIsIgnoredBot) is ignored", () => {
+  it("maintenance-bot LOW-confidence incidental mention stays ignored => GO", () => {
     const a = assess(
       makeSignals({
         competitors: [
-          makeCompetitor({ number: 99, authorLogin: "dependabot[bot]", authorIsIgnoredBot: true, highConfidence: true }),
+          makeCompetitor({
+            number: 99,
+            authorLogin: "dependabot[bot]",
+            authorIsIgnoredBot: true,
+            highConfidence: false,
+            linkKind: "mention",
+          }),
         ],
       }),
       TODAY,
     );
     expect(a.recommendation).toBe("GO");
     expect(a.open_competing_prs).toBe(0);
+  });
+
+  it("maintenance-bot HIGH-confidence closing PR is NOT ignored => not GO (G0)", () => {
+    for (const login of ["dependabot[bot]", "github-actions[bot]"]) {
+      const a = assess(
+        makeSignals({
+          competitors: [
+            makeCompetitor({
+              number: 42,
+              authorLogin: login,
+              authorIsIgnoredBot: true,
+              highConfidence: true,
+              linkKind: "closing-reference",
+              updatedAt: daysAgo(2),
+            }),
+          ],
+        }),
+        TODAY,
+      );
+      expect(a.recommendation).toBe("REJECT");
+      expect(a.open_competing_prs).toBe(1);
+      expect(a.recent_competitors).toBe(1);
+    }
+  });
+
+  it("maintenance-bot MERGED high-confidence PR is NOT ignored => REJECT (G0)", () => {
+    const a = assess(
+      makeSignals({
+        competitors: [
+          makeCompetitor({
+            number: 43,
+            authorLogin: "dependabot[bot]",
+            authorIsIgnoredBot: true,
+            highConfidence: true,
+            state: "MERGED",
+            merged: true,
+            linkKind: "closing-reference",
+          }),
+        ],
+      }),
+      TODAY,
+    );
+    expect(a.recommendation).toBe("REJECT");
+    expect(a.reasons[0]).toContain("#43");
   });
 
   it("UNKNOWN bot's active high-confidence closing PR still drives REJECT (not ignored)", () => {

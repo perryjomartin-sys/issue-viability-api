@@ -1,9 +1,31 @@
-# Issue Viability API — Phase 1 handoff (steps A–F)
+# Issue Viability API — Phase 1 handoff (steps A–G)
 
 ## BUILD STATUS
 
 Steps A–E complete and green, independently re-verified. Two pre-Step-F fixes
-(V1, V2) plus the Step-F review remediation (F1–F5) are applied.
+(V1, V2), the Step-F review remediation (F1–F5), and the Step-G local
+implementation (G0–G6) are applied. **Nothing is deployed.**
+
+### Step G — x402 V2 payment gate (local only)
+
+- **G0** — maintenance-bot exclusion now suppresses only LOW-confidence
+  incidental mentions. A HIGH-confidence competitor (linked / closing reference)
+  always counts, even from Dependabot / github-actions. `derive()` filter:
+  `c.highConfidence || !c.authorIsIgnoredBot`.
+- **G1** — `@x402/hono`, `@x402/core`, `@x402/evm`, plus required peers
+  `@x402/paywall` and `@x402/extensions` — all pinned to `2.24.0`.
+- **G2/G3** — `src/payments.ts` gates `POST /v1/check` on x402 V2, network
+  hard-coded to `eip155:84532` (Base Sepolia), price `$0.005`. `GET /` and
+  `GET /health` are never gated. OFF unless `X402_ENABLED`.
+- **G4** — `CONFIG.RATE_LIMIT_FLOOR` is now **enforced** in `src/app.ts`: once a
+  fetch reports `rateLimit.remaining` below the floor, no further live calls
+  until `resetAt` — serve a valid stale cache, else 503 + `Retry-After`.
+- **G5** — x402 Bazaar discovery extension via
+  `declareDiscoveryExtension` (`@x402/extensions/bazaar`), plus `serviceName` /
+  `description` / `tags` / `mimeType` / `resource` route metadata.
+- **G6** — proven locally: 113 unit tests (offline facilitator stub) + one live
+  smoke test against `https://x402.org/facilitator` returning a valid 402.
+- **G7/G8** — no account created, no wallet, no funds, no deployment.
 
 Pre-Step-F (baseline commit):
 
@@ -40,7 +62,8 @@ Step-F remediation (this commit):
   enforcement anywhere.
 
 Step F (independent GPT-5.6 diff review) has been performed; its findings are
-remediated above. Step G (testnet x402) not started, as instructed.
+remediated above. Step G is implemented locally (see "Step G" above) but
+**not deployed**.
 
 ## FILES
 
@@ -59,19 +82,21 @@ src/parse.ts       parseGraphQL + parseRest -> Signals (competitor confidence re
 src/github.ts      fetchSignals: GraphQL first, REST fallback, typed error propagation
 src/decision.ts    assess(signals, today) -> Assessment  (pure, ordered rule engine)
 src/cache.ts       MemoryCache + fresh/stale/expired contract + GO->CAUTION stale downgrade
-src/app.ts         Hono app factory: POST /v1/check, GET /health, GET /  (payments OFF)
-src/server.ts      @hono/node-server entrypoint (npm run dev)
+src/app.ts         Hono app factory: POST /v1/check, GET /health, GET / ; x402 gate + RATE_LIMIT_FLOOR
+src/payments.ts    x402 V2 payment gate (Base Sepolia only), Bazaar discovery, offline-injectable
+src/server.ts      @hono/node-server entrypoint (npm run dev), passes X402_* env
 
 test/helpers.ts        Signals/Competitor factories, fixed TODAY
 test/expect.ts         tiny assertion shim over node:assert (no vitest/vite dependency)
 test/dates.test.ts     7  cases
-test/parse.test.ts     19 cases
-test/decision.test.ts  23 cases (full rule matrix + determinism + id-keyed trim + unknown-bot)
+test/parse.test.ts     20 cases
+test/decision.test.ts  25 cases (rule matrix + determinism + id-keyed trim + bot allowlist/G0)
 test/github.test.ts    11 cases (orchestration: fallback, rate-limit primary+secondary, 401/404)
-test/app.test.ts       13 cases (HTTP status mapping, cache fresh/stale, fixture mode, slug validation)
+test/app.test.ts       16 cases (HTTP status mapping, cache fresh/stale, fixtures, slug, RATE_LIMIT_FLOOR)
 test/degraded.test.ts  3  cases (F1 REST->CAUTION, F2 GraphQL-errors->CAUTION, clean->GO)
+test/payments.test.ts  7  cases (x402 off by default, 402 when on, /health+/ ungated, bad payTo throws, bazaar)
 test/evaluation.test.ts 24 cases (23 real fixtures + false-GO gate)
-                       -- 100 subtests total, all passing
+                       -- 113 subtests total, all passing
 test/fixtures/cases.json          case list + human labels + recorded_at
 test/fixtures/raw/*.json          23 real GitHub GraphQL responses, captured 2026-08-30
 scripts/record-fixtures.mjs       re-capture fixtures via the gh CLI
@@ -80,15 +105,17 @@ scripts/inspect.mjs               dev: print parse+assess for every fixture
 package.json  tsconfig.json  .gitignore  README.md  HANDOFF.md
 ```
 
-Dependencies installed: `hono`, `@hono/node-server` (runtime); `typescript`,
-`@types/node` (dev). No test framework (uses `node:test`). No `wrangler`, no
-`@x402/*`.
+Runtime deps: `hono`, `@hono/node-server`, and the x402 V2 stack pinned to
+`2.24.0` — `@x402/hono`, `@x402/core`, `@x402/evm`, `@x402/extensions`,
+`@x402/paywall` (pulls in `viem`, `zod`). Dev: `typescript`, `@types/node`. No
+test framework (uses `node:test`). No `wrangler`. `node_modules` grows ~160 MB
+with the x402 + viem trees.
 
 ## TESTS
 
 ```
 npm run typecheck   -> tsc --noEmit, exit 0
-npm test            -> # tests 100   # pass 100   # fail 0
+npm test            -> # tests 113   # pass 113   # fail 0
 ```
 
 Runner is `node --experimental-strip-types --test 'test/*.test.ts'` (Node
@@ -158,15 +185,24 @@ False REJECT count: 0 (no clean issue misclassified as REJECT).
    manual live call on 2026-08-30 (rust-lang/rust#44975 → CAUTION via `source=graphql`;
    NOT_AN_ISSUE and NOT_FOUND propagated). No automated live test (would need a
    token in CI and would be non-deterministic).
-9. **`RATE_LIMIT_FLOOR` is not enforced** in this build (F5). Cross-request
-   budget management needs durable shared state; it is a Step-G requirement for
-   the production Worker/KV layer. `fetchSignals` already surfaces
-   `signals.rateLimit` (`cost` / `remaining` / `resetAt`) on every GraphQL
-   result for that layer to act on.
+9. **`RATE_LIMIT_FLOOR` enforcement is per process** (G4). `src/app.ts` tracks
+   the last-seen `rateLimit.remaining` / `resetAt` in a closure and stops live
+   calls below the floor. A multi-instance / Worker deployment needs this state
+   in KV or a Durable Object; the current mechanism protects a single process
+   only, and the very first request per process always goes through (budget is
+   unknown until a response arrives).
 10. **GraphQL partial-error heuristic is coarse** (F2): *any* non-empty `errors`
    array degrades the result to `partial`, even an error on a field the
-   assessment does not use. This is deliberately conservative (favours `CAUTION`
-   over `GO`); it can produce a `CAUTION` where a `GO` would have been safe.
+   assessment does not use. Deliberately conservative (favours `CAUTION`).
+11. **x402 gate needs the facilitator to build a 402** (G). With the gate on, an
+   unpaid request triggers one GET to `X402_FACILITATOR_URL/supported`
+   (cached after first success). If the facilitator is unreachable the middleware
+   returns a facilitator error, not a 402. Tests inject an offline stub.
+12. **x402 verify/settle is unproven end-to-end.** No real Base Sepolia payment
+   has been made (needs a funded testnet wallet + a paying client). Only the
+   402 / discovery / config paths are exercised. The Bazaar extension shape is
+   produced by the official `declareDiscoveryExtension` helper but has not been
+   validated against a live Bazaar indexer.
 
 ## CLAUDE VERDICT
 
@@ -177,8 +213,12 @@ false-GO rate is 0/23, all failure modes map to the designed HTTP codes, and no
 `GO` now survives a REST fallback, a GraphQL partial error, incomplete/truncated
 data, or an unknown-bot competing PR. No fundamental blocker remains.
 
-Step G (Base-Sepolia x402 V2) is **not started** and remains gated on Perry's
-go-ahead. Do not begin x402 / testnet / deployment work without it.
+Step G (Base-Sepolia x402 V2) is **implemented locally and verified locally**:
+G0 bot-handling tightened, the gate wired on `POST /v1/check` for
+`eip155:84532` only at `$0.005`, `RATE_LIMIT_FLOOR` enforced, Bazaar discovery
+declared, 113 tests + one live facilitator smoke test green. **Nothing is
+deployed. No wallet, no funds, no account.** Deploying to Base Sepolia, and any
+real payment, remain gated on Perry — see "STEP-G — REMAINING FOR TESTNET".
 
 ## STEP-F REVIEW — OUTCOME
 
@@ -192,3 +232,29 @@ their remediation (all in the Step-F commit):
 | F3 | every `__typename === "Bot"` / `[bot]` author was ignored → an autonomous coding bot's closing PR could yield `GO` | `isIgnoredMaintenanceBot` (allowlist only); `test/decision.test.ts`, `test/parse.test.ts` |
 | F4 | REST `getJson` let 401/secondary-403 bodies through as data | strict 2xx-only + primary/secondary rate-limit classification; `test/github.test.ts` |
 | F5 | `RATE_LIMIT_FLOOR` unused but implied enforced | documented as a Step-G requirement in `src/config.ts` + limitation #9; not claimed as enforced |
+
+Note: F5 is now **implemented** in Step G (G4) — see limitation #9 for the
+remaining per-process caveat.
+
+## STEP-G — REMAINING FOR TESTNET (needs Perry)
+
+The local implementation is done. To actually run on Base Sepolia, the
+following require Perry's decision and/or external action — none taken:
+
+1. **A Base Sepolia recipient address** for `X402_PAY_TO`. Any EVM address
+   works; testnet USDC has no real value. Perry supplies it.
+2. **A deploy target.** Nothing is deployed. Options, in order of least
+   commitment: run `npm run dev` on an existing box behind a tunnel; a free
+   Cloudflare Worker (`wrangler` not yet installed, no account configured); any
+   other host. Each needs Perry to choose and, for Cloudflare, to authorize
+   `wrangler` install + `wrangler login` (an account action).
+3. **An end-to-end payment test** needs a funded Base Sepolia wallet and a
+   paying x402 client (e.g. `x402-fetch` with a testnet key). Getting testnet
+   ETH/USDC from a faucet and using a wallet key are external actions — STOP
+   and ask first (G7).
+4. **Facilitator choice.** Default is the public `https://x402.org/facilitator`
+   (keyless for base-sepolia). If a CDP-hosted facilitator is wanted instead it
+   needs a CDP API key (paid-account adjacent) — not configured.
+5. **Bazaar listing.** The route declares the discovery extension; whether it
+   actually appears in a Bazaar index depends on the deployed `resource` URL
+   being reachable and indexed. Unverified.
