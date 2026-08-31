@@ -20,7 +20,12 @@ export interface CompetitorPr {
   createdAt: string;
   updatedAt: string;
   authorLogin: string | null;
-  authorIsBot: boolean;
+  /**
+   * True only when the author is on the maintenance-bot allowlist
+   * (`isIgnoredMaintenanceBot`) and this PR is excluded from competitor logic.
+   * An unknown bot / coding-agent author is `false` here and DOES compete.
+   */
+  authorIsIgnoredBot: boolean;
   highConfidence: boolean;
   /** How this PR became linked, for debugging / reasons text. */
   linkKind: "connected" | "closing-reference" | "mention";

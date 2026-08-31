@@ -104,6 +104,12 @@ async function safeText(res: Response): Promise<string> {
 
 /* -------------------------------- REST path ------------------------------- */
 
+/**
+ * One REST GET. Only a 2xx response yields data; a 404 is reported as such (the
+ * caller maps it to NotFound). Every other status becomes a typed error, so a
+ * JSON error body (401/403/5xx/…) can never be mistaken for repository or issue
+ * data further down.
+ */
 async function getJson(
   fetchImpl: FetchLike,
   url: string,
@@ -111,9 +117,27 @@ async function getJson(
   signal: AbortSignal,
 ): Promise<{ status: number; json: any; linkNext: boolean }> {
   const res = await fetchImpl(url, { headers: headers(token), signal });
+
   if (res.status === 403 || res.status === 429) {
-    if (res.headers.get("x-ratelimit-remaining") === "0") throw new GitHubRateLimitedError(retryAfterFrom(res));
+    const remaining = res.headers.get("x-ratelimit-remaining");
+    const retryAfter = res.headers.get("retry-after");
+    const body = await safeText(res);
+    // Primary limit (remaining === "0") OR secondary/abuse limit (a Retry-After
+    // header, or an explicit rate-limit message) — both are "rate limited",
+    // even when `remaining` is not zero.
+    if (
+      remaining === "0" ||
+      retryAfter != null ||
+      /\b(rate limit|secondary rate|abuse detection)\b/i.test(body)
+    ) {
+      throw new GitHubRateLimitedError(retryAfterFrom(res));
+    }
+    throw new GitHubUpstreamError(`GitHub REST returned ${res.status}`);
   }
+  if (res.status === 404) return { status: 404, json: null, linkNext: false };
+  if (res.status === 401) throw new GitHubUpstreamError("GitHub rejected the credential (401)");
+  if (!res.ok) throw new GitHubUpstreamError(`GitHub REST returned ${res.status}`);
+
   const linkNext = /rel="next"/.test(res.headers.get("link") ?? "");
   let json: any = null;
   try {
@@ -134,9 +158,7 @@ async function tryRest(o: Required<FetchSignalsOptions>): Promise<Signals> {
     ]);
 
     if (repo.status === 404 || issue.status === 404) throw new GitHubNotFoundError();
-    if (repo.status >= 500 || issue.status >= 500 || !repo.json || !issue.json) {
-      throw new GitHubUpstreamError("GitHub REST unavailable");
-    }
+    if (!repo.json || !issue.json) throw new GitHubUpstreamError("GitHub REST returned no usable body");
     if (issue.json.pull_request) throw new GitHubNotAnIssueError();
 
     const [timeline, commits] = await Promise.all([
@@ -146,7 +168,12 @@ async function tryRest(o: Required<FetchSignalsOptions>): Promise<Signals> {
         o.token,
         signal,
       ),
-      getJson(o.fetchImpl, `${base}/commits?per_page=1`, o.token, signal),
+      // Commits are an optional enrichment (a fallback "repo last active" date):
+      // tolerate their failure, but never swallow a rate-limit signal.
+      getJson(o.fetchImpl, `${base}/commits?per_page=1`, o.token, signal).catch((e) => {
+        if (e instanceof GitHubRateLimitedError) throw e;
+        return { status: 0, json: null, linkNext: false };
+      }),
     ]);
 
     const inputs: RestInputs = {

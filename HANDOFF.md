@@ -2,18 +2,45 @@
 
 ## BUILD STATUS
 
-Steps A–E complete and green, independently re-verified, with two pre-Step-F
-review fixes applied:
+Steps A–E complete and green, independently re-verified. Two pre-Step-F fixes
+(V1, V2) plus the Step-F review remediation (F1–F5) are applied.
 
-- **V1** — HTTP slug validation now delegates to `parseRepoSlug` (single source
-  of truth), so a malformed slug like `owner/name!` returns the documented 400
+Pre-Step-F (baseline commit):
+
+- **V1** — HTTP slug validation delegates to `parseRepoSlug` (single source of
+  truth), so a malformed slug like `owner/name!` returns the documented 400
   instead of an untyped throw surfacing as 502.
 - **V2** — the closed-issue reason trim in `src/decision.ts` keys on rule `id`
-  (`RULES` is now exported), not on matching human-readable reason wording.
+  (`RULES` is exported), not on matching human-readable reason wording.
 
-Step F (independent GPT-5.6 diff review) is the next action and is **not**
-something this build can perform itself. Step G (testnet x402) not started, as
-instructed.
+Step-F remediation (this commit):
+
+- **F1** — every REST-derived `Signals` is now `dataQuality: "partial"`
+  unconditionally (REST has no `willCloseTarget`/high-confidence evidence), so
+  an otherwise-clean REST result assesses to `CAUTION`, never `GO`.
+  `timelineTruncated` stays independently reported.
+- **F2** — `parseGraphQL` marks `dataQuality: "partial"` whenever the response
+  carried a non-empty `errors` array, or a required collection
+  (`timelineItems` / `assignees`) came back null. A would-be `GO` becomes
+  `CAUTION`; a failed field is never treated as clean evidence.
+- **F3** — `isBotAuthor` → `isIgnoredMaintenanceBot`: only the explicit
+  maintenance allowlist (Dependabot, Renovate, …) is excluded from competitor
+  logic. `__typename === "Bot"` and a `"[bot]"` login suffix are no longer
+  sufficient on their own, so an unknown coding-agent bot's active
+  high-confidence closing PR now drives `REJECT`. `CompetitorPr.authorIsBot`
+  renamed to `authorIsIgnoredBot`.
+- **F4** — `getJson` (REST) accepts only 2xx (and a deliberate 404). 401 / other
+  4xx / 5xx become typed `GitHubUpstreamError`; 403/429 with `remaining === 0`
+  OR a `Retry-After` header OR a rate-limit message become
+  `GitHubRateLimitedError` (primary and secondary limits). A JSON error body
+  can no longer reach `parseRest` as repository/issue data.
+- **F5** — `CONFIG.RATE_LIMIT_FLOOR` is documented as **not enforced** in this
+  build; enforcement is a Step-G requirement in the production Worker/KV layer
+  (see the constant's doc comment and "Step G" below). No false claim of
+  enforcement anywhere.
+
+Step F (independent GPT-5.6 diff review) has been performed; its findings are
+remediated above. Step G (testnet x402) not started, as instructed.
 
 ## FILES
 
@@ -25,7 +52,7 @@ src/config.ts      decision constants (COMPET_DAYS=14, REPO_DAYS=90, ASSIGN_STAL
                    ISSUE_STALE_DAYS=365, cache 600/3600s) — the whole public contract
 src/types.ts       Signals / Assessment / CompetitorPr + typed errors
 src/dates.ts       UTC-day-truncated age helpers (determinism lives here)
-src/bots.ts        static bot-author allowlist
+src/bots.ts        maintenance-bot allowlist (isIgnoredMaintenanceBot); unknown bots compete
 src/query.ts       the single GraphQL query (issueOrPullRequest union, willCloseTarget,
                    connect/disconnect, assign/unassign, rateLimit)
 src/parse.ts       parseGraphQL + parseRest -> Signals (competitor confidence resolution)
@@ -38,12 +65,13 @@ src/server.ts      @hono/node-server entrypoint (npm run dev)
 test/helpers.ts        Signals/Competitor factories, fixed TODAY
 test/expect.ts         tiny assertion shim over node:assert (no vitest/vite dependency)
 test/dates.test.ts     7  cases
-test/parse.test.ts     17 cases
-test/decision.test.ts  22 cases (full rule matrix + determinism + id-keyed trim)
-test/github.test.ts    8  cases (orchestration: fallback, rate-limit, error mapping)
+test/parse.test.ts     19 cases
+test/decision.test.ts  23 cases (full rule matrix + determinism + id-keyed trim + unknown-bot)
+test/github.test.ts    11 cases (orchestration: fallback, rate-limit primary+secondary, 401/404)
 test/app.test.ts       13 cases (HTTP status mapping, cache fresh/stale, fixture mode, slug validation)
+test/degraded.test.ts  3  cases (F1 REST->CAUTION, F2 GraphQL-errors->CAUTION, clean->GO)
 test/evaluation.test.ts 24 cases (23 real fixtures + false-GO gate)
-                       -- 91 subtests total, all passing
+                       -- 100 subtests total, all passing
 test/fixtures/cases.json          case list + human labels + recorded_at
 test/fixtures/raw/*.json          23 real GitHub GraphQL responses, captured 2026-08-30
 scripts/record-fixtures.mjs       re-capture fixtures via the gh CLI
@@ -60,7 +88,7 @@ Dependencies installed: `hono`, `@hono/node-server` (runtime); `typescript`,
 
 ```
 npm run typecheck   -> tsc --noEmit, exit 0
-npm test            -> # tests 91   # pass 91   # fail 0
+npm test            -> # tests 100   # pass 100   # fail 0
 ```
 
 Runner is `node --experimental-strip-types --test 'test/*.test.ts'` (Node
@@ -111,8 +139,11 @@ False REJECT count: 0 (no clean issue misclassified as REJECT).
    live in rust-lang/rust#110011.
 3. **Non-recent high-confidence PRs → CAUTION, not REJECT** (rule 4 needs an
    update within 14 days). rust-lang/rust#147931 is the live example.
-4. **REST fallback cannot hard-REJECT on competitors** — no `willCloseTarget`
-   over REST, so every REST competitor is low-confidence. Conservative by design.
+4. **REST fallback never emits a clean `GO`** — no `willCloseTarget` over REST
+   and its `connected` events are opaque, so every REST result is
+   `data_quality: "partial"` and any would-be `GO` is downgraded to `CAUTION`
+   (F1). REST competitors are also all low-confidence, so REST can never
+   hard-REJECT. Conservative by design.
 5. **Timeline truncated at 100 items** on heavily-referenced issues →
    `data_quality: "partial"` and any `GO` becomes `CAUTION`. Older `ConnectedEvent`
    links on such issues can be missed; the closed-issue cases here hit this but
@@ -127,27 +158,37 @@ False REJECT count: 0 (no clean issue misclassified as REJECT).
    manual live call on 2026-08-30 (rust-lang/rust#44975 → CAUTION via `source=graphql`;
    NOT_AN_ISSUE and NOT_FOUND propagated). No automated live test (would need a
    token in CI and would be non-deterministic).
+9. **`RATE_LIMIT_FLOOR` is not enforced** in this build (F5). Cross-request
+   budget management needs durable shared state; it is a Step-G requirement for
+   the production Worker/KV layer. `fetchSignals` already surfaces
+   `signals.rateLimit` (`cost` / `remaining` / `resetAt`) on every GraphQL
+   result for that layer to act on.
+10. **GraphQL partial-error heuristic is coarse** (F2): *any* non-empty `errors`
+   array degrades the result to `partial`, even an error on a field the
+   assessment does not use. This is deliberately conservative (favours `CAUTION`
+   over `GO`); it can produce a `CAUTION` where a `GO` would have been safe.
 
 ## CLAUDE VERDICT
 
-Steps A–F deliverables are complete through E; F is Perry's to run. The engine is
-deterministic, the real-data false-GO rate is 0/23, all failure modes map to the
-designed HTTP codes, and no `GO` survives incomplete or stale data. No
-fundamental blocker found. **Recommend proceeding to step F** (independent
-GPT-5.6 diff review of `src/`), then step G (Base-Sepolia x402 V2) only if F
-passes.
+Steps A–E are complete, independently re-verified, and green. Step F (independent
+GPT-5.6 diff review) has been performed; findings F1–F5 are remediated in this
+commit with regression tests. The engine is deterministic, the real-data
+false-GO rate is 0/23, all failure modes map to the designed HTTP codes, and no
+`GO` now survives a REST fallback, a GraphQL partial error, incomplete/truncated
+data, or an unknown-bot competing PR. No fundamental blocker remains.
 
-## FOR THE STEP-F REVIEWER
+Step G (Base-Sepolia x402 V2) is **not started** and remains gated on Perry's
+go-ahead. Do not begin x402 / testnet / deployment work without it.
 
-Diff to review = the entire `issue-viability-api/src/` tree (11 files, ~900 LOC)
-plus `test/`. Focus areas:
+## STEP-F REVIEW — OUTCOME
 
-- `src/decision.ts` — rule order and the closed-issue reason trim; is any
-  ordering wrong, any rule missing, any `GO` path under-guarded?
-- `src/parse.ts` — competitor confidence resolution (connect/disconnect race,
-  `willCloseTarget`, bot filtering, `lastAssignedAt` when the timeline is
-  truncated).
-- `src/github.ts` — which errors trigger the REST fallback vs. propagate; the
-  rate-limit detection heuristics.
-- `src/dates.ts` — the UTC-day truncation is the whole determinism guarantee.
-- `test/fixtures/cases.json` — are any of the 23 human labels wrong?
+Reviewed: the entire `issue-viability-api/src/` tree plus `test/`. Findings and
+their remediation (all in the Step-F commit):
+
+| # | Finding | Fix |
+|---|---|---|
+| F1 | REST results could assess to a clean `GO` despite REST being structurally low-evidence | `parseRest` → `dataQuality: "partial"` always; regression tests in `test/degraded.test.ts`, `test/parse.test.ts` |
+| F2 | GraphQL `data.repository` + `errors` (nulled fields) could still produce `GO` | `parseGraphQL` → `partial` on any non-empty `errors` or a null required collection; `test/degraded.test.ts` |
+| F3 | every `__typename === "Bot"` / `[bot]` author was ignored → an autonomous coding bot's closing PR could yield `GO` | `isIgnoredMaintenanceBot` (allowlist only); `test/decision.test.ts`, `test/parse.test.ts` |
+| F4 | REST `getJson` let 401/secondary-403 bodies through as data | strict 2xx-only + primary/secondary rate-limit classification; `test/github.test.ts` |
+| F5 | `RATE_LIMIT_FLOOR` unused but implied enforced | documented as a Step-G requirement in `src/config.ts` + limitation #9; not claimed as enforced |

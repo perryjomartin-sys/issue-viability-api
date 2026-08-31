@@ -20,7 +20,7 @@ for (const c of cases) {
     const s = parseGraphQL(raw);
     const a = assess(s, today);
     const comp = s.competitors
-      .map((x) => `#${x.number}:${x.state}${x.highConfidence ? "!" : ""}${x.authorIsBot ? "(bot)" : ""}`)
+      .map((x) => `#${x.number}:${x.state}${x.highConfidence ? "!" : ""}${x.authorIsIgnoredBot ? "(bot)" : ""}`)
       .join(",");
     line = `${a.recommendation.padEnd(8)} risk=${a.risk.padEnd(6)} state=${s.issueState} asg=${s.assignees.length} openPR=${a.open_competing_prs} recentPR=${a.recent_competitors} repoActive=${a.repo_active} dq=${a.data_quality} trunc=${s.timelineTruncated} | comp[${comp}] | ${a.reasons.join(" || ")}`;
   } catch (e) {

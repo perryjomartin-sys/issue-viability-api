@@ -1,4 +1,4 @@
-import { isBotAuthor } from "./bots.ts";
+import { isIgnoredMaintenanceBot } from "./bots.ts";
 import {
   GitHubNotAnIssueError,
   GitHubNotFoundError,
@@ -23,7 +23,7 @@ interface WorkingPr {
   createdAt: string;
   updatedAt: string;
   authorLogin: string | null;
-  authorIsBot: boolean;
+  authorIsIgnoredBot: boolean;
   hadConnected: boolean;
   lastConnectedAt: string | null;
   lastDisconnectedAt: string | null;
@@ -50,7 +50,7 @@ function applyPrBits(entry: WorkingPr, pr: any): void {
   if (typeof pr?.updatedAt === "string") entry.updatedAt = pr.updatedAt;
   const login: string | null = pr?.author?.login ?? null;
   entry.authorLogin = login;
-  entry.authorIsBot = isBotAuthor(login, pr?.author?.__typename);
+  entry.authorIsIgnoredBot = isIgnoredMaintenanceBot(login);
 }
 
 function ensurePr(map: Map<number, WorkingPr>, pr: any): WorkingPr | null {
@@ -66,7 +66,7 @@ function ensurePr(map: Map<number, WorkingPr>, pr: any): WorkingPr | null {
       createdAt: pr?.createdAt ?? "",
       updatedAt: pr?.updatedAt ?? "",
       authorLogin: null,
-      authorIsBot: false,
+      authorIsIgnoredBot: false,
       hadConnected: false,
       lastConnectedAt: null,
       lastDisconnectedAt: null,
@@ -108,7 +108,7 @@ function finaliseCompetitors(map: Map<number, WorkingPr>): CompetitorPr[] {
       createdAt: e.createdAt,
       updatedAt: e.updatedAt,
       authorLogin: e.authorLogin,
-      authorIsBot: e.authorIsBot,
+      authorIsIgnoredBot: e.authorIsIgnoredBot,
       highConfidence,
       linkKind,
     });
@@ -202,7 +202,19 @@ export function parseGraphQL(raw: GqlResponse | { repository?: unknown }): Signa
 
   const lastAssignedAt = computeLastAssignedAt(timeline, new Set(currentAssignees));
   const timelineTruncated = iop.timelineItems?.pageInfo?.hasPreviousPage === true;
-  const dataQuality: DataQuality = timelineTruncated ? "partial" : "ok";
+
+  // A GraphQL response can carry a usable `data.repository` AND an `errors`
+  // array: GitHub nulled some field(s). We must not treat the resulting
+  // empty/default values as clean evidence. Any such error, or a required
+  // collection that came back null (not merely empty), degrades the result to
+  // "partial" — which forces a would-be GO down to CAUTION in the engine.
+  const hasGraphErrors = Array.isArray(errors) && errors.length > 0;
+  const timelineFieldMissing = iop.timelineItems == null || iop.timelineItems.nodes == null;
+  const assigneesFieldMissing = iop.assignees == null || iop.assignees.nodes == null;
+  const dataQuality: DataQuality =
+    timelineTruncated || hasGraphErrors || timelineFieldMissing || assigneesFieldMissing
+      ? "partial"
+      : "ok";
 
   return {
     found: true,
@@ -278,7 +290,7 @@ export function parseRest(inp: RestInputs): Signals {
         createdAt: src.created_at ?? "",
         updatedAt: src.updated_at ?? src.created_at ?? "",
         authorLogin: login,
-        authorIsBot: isBotAuthor(login, src.user?.type),
+        authorIsIgnoredBot: isIgnoredMaintenanceBot(login),
         hadConnected: false,
         lastConnectedAt: null,
         lastDisconnectedAt: null,
@@ -297,7 +309,12 @@ export function parseRest(inp: RestInputs): Signals {
     .map((a: any) => a?.login)
     .filter((x: unknown): x is string => typeof x === "string");
 
-  const dataQuality: DataQuality = inp.timelineTruncated ? "partial" : "ok";
+  // REST is structurally degraded for this product: it has no `willCloseTarget`
+  // and its `connected` events do not identify the PR, so it can never supply
+  // high-confidence competitor evidence. Every REST-derived result is therefore
+  // "partial" regardless of pagination — an otherwise-clean REST result assesses
+  // to CAUTION, never GO. `timelineTruncated` is still reported independently.
+  const dataQuality: DataQuality = "partial";
   const commitDate: string | null = inp.commits?.[0]?.commit?.committer?.date ?? null;
 
   return {

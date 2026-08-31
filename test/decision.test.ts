@@ -161,17 +161,38 @@ describe("decision engine — recommendations", () => {
     expect(a.reasons).toContain("assessment is based on incomplete data");
   });
 
-  it("bot-authored competitor is ignored", () => {
+  it("maintenance-bot competitor (authorIsIgnoredBot) is ignored", () => {
     const a = assess(
       makeSignals({
         competitors: [
-          makeCompetitor({ number: 99, authorLogin: "dependabot[bot]", authorIsBot: true, highConfidence: true }),
+          makeCompetitor({ number: 99, authorLogin: "dependabot[bot]", authorIsIgnoredBot: true, highConfidence: true }),
         ],
       }),
       TODAY,
     );
     expect(a.recommendation).toBe("GO");
     expect(a.open_competing_prs).toBe(0);
+  });
+
+  it("UNKNOWN bot's active high-confidence closing PR still drives REJECT (not ignored)", () => {
+    const a = assess(
+      makeSignals({
+        competitors: [
+          makeCompetitor({
+            number: 123,
+            authorLogin: "some-coding-agent[bot]",
+            authorIsIgnoredBot: false, // unknown bot: parser does NOT put it on the allowlist
+            highConfidence: true,
+            linkKind: "closing-reference",
+            updatedAt: daysAgo(2),
+          }),
+        ],
+      }),
+      TODAY,
+    );
+    expect(a.recommendation).toBe("REJECT");
+    expect(a.open_competing_prs).toBe(1);
+    expect(a.recent_competitors).toBe(1);
   });
 });
 

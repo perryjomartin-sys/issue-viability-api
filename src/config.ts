@@ -20,7 +20,17 @@ export const CONFIG = {
   CACHE_FRESH_SECONDS: 600,
   /** Cache: total seconds retained; 600..3600 is stale-fallback only. */
   CACHE_STALE_SECONDS: 3600,
-  /** Serve cache-only when the GitHub token's remaining budget drops below this. */
+  /**
+   * Intended floor: once the GitHub token's remaining GraphQL budget drops
+   * below this, serve cache-only until the window resets.
+   *
+   * NOT ENFORCED in this build. Cross-request budget management needs shared,
+   * durable state; the local `MemoryCache` stub is per-process and per-run.
+   * Enforcement is a Step-G requirement in the production Worker/KV layer:
+   * after each fetch, inspect `signals.rateLimit.remaining` and, below this
+   * floor, refuse live calls (503 / stale cache) until `rateLimit.resetAt`.
+   * `fetchSignals` already surfaces `rateLimit` on every GraphQL result.
+   */
   RATE_LIMIT_FLOOR: 150,
 } as const;
 

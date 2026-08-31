@@ -39,7 +39,7 @@ export function makeCompetitor(partial: Partial<CompetitorPr> = {}): CompetitorP
     createdAt: daysAgo(10),
     updatedAt: daysAgo(2),
     authorLogin: "someone",
-    authorIsBot: false,
+    authorIsIgnoredBot: false,
     highConfidence: false,
     linkKind: "mention",
     ...partial,

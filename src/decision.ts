@@ -38,7 +38,7 @@ function mostRecent(prs: CompetitorPr[]): CompetitorPr | null {
 }
 
 function derive(s: Signals, today: Date): DerivedCtx {
-  const comp = s.competitors.filter((c) => !c.authorIsBot);
+  const comp = s.competitors.filter((c) => !c.authorIsIgnoredBot);
   const openComp = comp.filter((c) => c.state === "OPEN");
   const highConf = comp.filter((c) => c.highConfidence);
 

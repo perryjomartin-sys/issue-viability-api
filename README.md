@@ -37,11 +37,11 @@ Phase-1 build, steps **A–F** of the agreed plan. Steps done:
 |---|---|---|
 | A | Deterministic GitHub client (`src/github.ts`, `src/parse.ts`, `src/query.ts`) | done |
 | B | Decision engine (`src/decision.ts`) | done |
-| C | Unit tests (`test/*.test.ts`, `node:test`) | 91 passing |
+| C | Unit tests (`test/*.test.ts`, `node:test`) | 100 passing |
 | D | Real-world evaluation (`test/evaluation.test.ts`, 23 recorded GitHub fixtures) | false-GO = 0 |
 | E | Local endpoint (`src/app.ts` + `src/server.ts`, Hono, **payments OFF**) | runs |
-| F | Independent GPT-5.6 diff review | **pending — Perry/harness** |
-| G | Base-Sepolia x402 V2 | **not started (blocked on F)** |
+| F | Independent GPT-5.6 diff review | **done — findings F1–F5 remediated (see HANDOFF.md)** |
+| G | Base-Sepolia x402 V2 | **not started (awaiting go-ahead)** |
 
 No deployment. No paid Cloudflare plan. No `@x402/*` packages installed yet.
 
@@ -73,8 +73,14 @@ One authenticated **GraphQL** request per uncached call
 (`src/query.ts`) returns repo activity, issue state, assignees, and the issue
 timeline (cross-references with `willCloseTarget`, connect/disconnect,
 assign/unassign). A REST fallback (`parseRest`) covers GraphQL outages; REST
-cannot see `willCloseTarget`, so every REST competitor is treated as
-low-confidence and can only ever raise `CAUTION`, never `REJECT`.
+cannot see `willCloseTarget` and its `connected` events are opaque, so every
+REST result is `data_quality: "partial"` — a REST competitor is always
+low-confidence (never `REJECT`) and an otherwise-clean REST result is
+downgraded from `GO` to `CAUTION`.
+
+A GraphQL response that returns usable `data.repository` alongside a non-empty
+`errors` array (or a null `timelineItems` / `assignees`) is likewise treated as
+`partial`: a failed field is never read as clean evidence.
 
 **Competitor confidence (per the review):**
 
@@ -101,8 +107,11 @@ low-confidence and can only ever raise `CAUTION`, never `REJECT`.
 | — | none of the above | GO |
 
 A `GO` is **never** emitted on incomplete or stale data — it is downgraded to
-`CAUTION`. Bot-authored PRs (Dependabot, Renovate, …) are excluded from all
-competitor counts (`src/bots.ts`).
+`CAUTION`. Only PRs from an allowlist of **maintenance** bots (Dependabot,
+Renovate, …) are excluded from competitor counts (`isIgnoredMaintenanceBot`,
+`src/bots.ts`); an unknown bot — e.g. an autonomous coding agent — counts as a
+real competitor, so its active high-confidence closing PR can still drive
+`REJECT`.
 
 Tunable constants live in one place: `src/config.ts`.
 
@@ -131,3 +140,7 @@ Target: one Cloudflare Worker, Hono, Workers KV for the cache, native Rate
 Limiting binding, x402 **V2** payment middleware (`@x402/hono`, headers
 `PAYMENT-REQUIRED` / `PAYMENT-SIGNATURE` / `PAYMENT-RESPONSE`) on `POST /v1/check`
 priced at `$0.005`, `base-sepolia` (`eip155:84532`) first. See `HANDOFF.md`.
+
+`CONFIG.RATE_LIMIT_FLOOR` (150) is **defined but not enforced** in this build —
+enforcing it (serve cache-only once the token's `rateLimit.remaining` drops
+below the floor, until `resetAt`) is a step-G task for the Worker/KV layer.

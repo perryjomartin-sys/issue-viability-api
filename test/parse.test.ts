@@ -108,11 +108,28 @@ describe("parseGraphQL — competitors", () => {
     expect(s.competitors[0]!.merged).toBe(true);
   });
 
-  it("bot author flagged via __typename", () => {
+  it("known maintenance bot (allowlisted login) => authorIsIgnoredBot true", () => {
     const s = parseGraphQL(
-      repo(issue([{ __typename: "CrossReferencedEvent", createdAt: "2026-08-20T00:00:00Z", willCloseTarget: false, source: pr({ number: 506, author: { __typename: "Bot", login: "renovate" } }) }])),
+      repo(issue([{ __typename: "CrossReferencedEvent", createdAt: "2026-08-20T00:00:00Z", willCloseTarget: false, source: pr({ number: 506, author: { __typename: "Bot", login: "renovate[bot]" } }) }])),
     );
-    expect(s.competitors[0]!.authorIsBot).toBe(true);
+    expect(s.competitors[0]!.authorIsIgnoredBot).toBe(true);
+  });
+
+  it("UNKNOWN bot is NOT ignored — __typename:'Bot' and '[bot]' suffix are not enough", () => {
+    const s = parseGraphQL(
+      repo(
+        issue([
+          {
+            __typename: "CrossReferencedEvent",
+            createdAt: "2026-08-20T00:00:00Z",
+            willCloseTarget: true,
+            source: pr({ number: 777, author: { __typename: "Bot", login: "some-coding-agent[bot]" } }),
+          },
+        ]),
+      ),
+    );
+    expect(s.competitors[0]!.authorIsIgnoredBot).toBe(false);
+    expect(s.competitors[0]).toMatchObject({ number: 777, highConfidence: true });
   });
 
   it("deduplicates multiple events for the same PR number", () => {
@@ -209,6 +226,13 @@ describe("parseRest — fallback", () => {
     expect(s.source).toBe("rest");
     expect(s.competitors).toHaveLength(1);
     expect(s.competitors[0]).toMatchObject({ number: 999, highConfidence: false });
+  });
+
+  it("REST result is always dataQuality 'partial', even when the timeline is not truncated", () => {
+    const s = parseRest({ repo: restRepo, issue: restIssue, timeline: [], timelineTruncated: false });
+    expect(s.source).toBe("rest");
+    expect(s.dataQuality).toBe("partial");
+    expect(s.timelineTruncated).toBe(false); // still reported independently
   });
 
   it("archived repo flag is read", () => {

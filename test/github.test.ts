@@ -109,6 +109,56 @@ describe("fetchSignals — orchestration", () => {
     expect(threw instanceof GitHubUpstreamError).toBe(true);
   });
 
+  it("F4: REST 401 after a GraphQL failure yields a typed upstream error, never Signals", async () => {
+    const fetchImpl: FetchLike = async (url) => {
+      if (url.includes("/graphql")) return res("boom", { status: 502, headers: {} });
+      return res({ message: "Bad credentials" }, { status: 401, headers: {} });
+    };
+    let threw: unknown;
+    let result: unknown;
+    try {
+      result = await fetchSignals(opts(fetchImpl));
+    } catch (e) {
+      threw = e;
+    }
+    expect(result).toBeUndefined();
+    expect(threw instanceof GitHubUpstreamError).toBe(true);
+    expect(threw instanceof GitHubNotFoundError).toBe(false);
+  });
+
+  it("F4: REST secondary rate limit (403, remaining>0, rate-limit message) => GitHubRateLimitedError", async () => {
+    const fetchImpl: FetchLike = async (url) => {
+      if (url.includes("/graphql")) return res("boom", { status: 500, headers: {} });
+      return res("You have exceeded a secondary rate limit", {
+        status: 403,
+        headers: { "x-ratelimit-remaining": "3172", "retry-after": "45" },
+      });
+    };
+    let threw: unknown;
+    try {
+      await fetchSignals(opts(fetchImpl));
+    } catch (e) {
+      threw = e;
+    }
+    expect(threw instanceof GitHubRateLimitedError).toBe(true);
+    expect((threw as GitHubRateLimitedError).retryAfterSeconds).toBe(45);
+  });
+
+  it("F4: REST 404 after a GraphQL failure => GitHubNotFoundError (deliberate 404 preserved)", async () => {
+    const fetchImpl: FetchLike = async (url) => {
+      if (url.includes("/graphql")) return res("boom", { status: 500, headers: {} });
+      if (url.endsWith("/repos/rust-lang/rust")) return res({ message: "Not Found" }, { status: 404, headers: {} });
+      return res([]);
+    };
+    let threw: unknown;
+    try {
+      await fetchSignals(opts(fetchImpl));
+    } catch (e) {
+      threw = e;
+    }
+    expect(threw instanceof GitHubNotFoundError).toBe(true);
+  });
+
   it("REST fallback still surfaces 'number is a PR'", async () => {
     const fetchImpl: FetchLike = async (url) => {
       if (url.includes("/graphql")) return res("boom", { status: 500, headers: {} });
