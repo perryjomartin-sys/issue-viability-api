@@ -1,0 +1,189 @@
+{
+  "note": "Real GitHub issues captured as GraphQL fixtures for the evaluation suite (step D). `expect` is a careful human reading of the SAME captured data; the test asserts the engine reproduces it and, above all, never emits GO where a human sees a blocker (false_go must be 0). Age windows are evaluated against each case's `recorded_at`. Re-run `npm run record-fixtures` to refresh; labels then need review because live issue state drifts.",
+  "cases": [
+    {
+      "slug": "rust-1-closed",
+      "repo": "rust-lang/rust",
+      "issue": 1,
+      "recorded_at": "2026-08-30",
+      "scenario": "closed issue, huge truncated timeline",
+      "expect": "REJECT"
+    },
+    {
+      "slug": "rust-2-closed",
+      "repo": "rust-lang/rust",
+      "issue": 2,
+      "recorded_at": "2026-08-30",
+      "scenario": "closed issue, huge truncated timeline",
+      "expect": "REJECT"
+    },
+    {
+      "slug": "vscode-1-closed",
+      "repo": "microsoft/vscode",
+      "issue": 1,
+      "recorded_at": "2026-08-30",
+      "scenario": "closed issue, merged closing PR",
+      "expect": "REJECT"
+    },
+    {
+      "slug": "vscode-2-closed",
+      "repo": "microsoft/vscode",
+      "issue": 2,
+      "recorded_at": "2026-08-30",
+      "scenario": "closed issue, merged closing PR",
+      "expect": "REJECT"
+    },
+    {
+      "slug": "flask-1-closed",
+      "repo": "pallets/flask",
+      "issue": 1,
+      "recorded_at": "2026-08-30",
+      "scenario": "closed issue, no PRs",
+      "expect": "REJECT"
+    },
+    {
+      "slug": "flask-2-closed",
+      "repo": "pallets/flask",
+      "issue": 2,
+      "recorded_at": "2026-08-30",
+      "scenario": "closed issue, no PRs",
+      "expect": "REJECT"
+    },
+    {
+      "slug": "go-1-closed",
+      "repo": "golang/go",
+      "issue": 1,
+      "recorded_at": "2026-08-30",
+      "scenario": "closed issue",
+      "expect": "REJECT"
+    },
+    {
+      "slug": "go-2-closed",
+      "repo": "golang/go",
+      "issue": 2,
+      "recorded_at": "2026-08-30",
+      "scenario": "closed issue",
+      "expect": "REJECT"
+    },
+    {
+      "slug": "k8s-1-closed",
+      "repo": "kubernetes/kubernetes",
+      "issue": 1,
+      "recorded_at": "2026-08-30",
+      "scenario": "closed issue, huge truncated timeline",
+      "expect": "REJECT"
+    },
+    {
+      "slug": "node-1-is-pr",
+      "repo": "nodejs/node",
+      "issue": 1,
+      "recorded_at": "2026-08-30",
+      "scenario": "number is a pull request",
+      "expect": "NOT_AN_ISSUE"
+    },
+    {
+      "slug": "draftjs-3182-archived",
+      "repo": "facebookarchive/draft-js",
+      "issue": 3182,
+      "recorded_at": "2026-08-30",
+      "scenario": "archived repo, number is a pull request",
+      "expect": "NOT_AN_ISSUE"
+    },
+    {
+      "slug": "linux-1-issues-disabled",
+      "repo": "torvalds/linux",
+      "issue": 1,
+      "recorded_at": "2026-08-30",
+      "scenario": "repo has issues disabled",
+      "expect": "NOT_FOUND"
+    },
+    {
+      "slug": "ghost-repo",
+      "repo": "octocat/this-repo-does-not-exist-xyz",
+      "issue": 1,
+      "recorded_at": "2026-08-30",
+      "scenario": "repository not found",
+      "expect": "NOT_FOUND"
+    },
+    {
+      "slug": "draftjs-3181-archived",
+      "repo": "facebookarchive/draft-js",
+      "issue": 3181,
+      "recorded_at": "2026-08-30",
+      "scenario": "archived repo, open issue",
+      "expect": "REJECT"
+    },
+    {
+      "slug": "rust-161989-feature",
+      "repo": "rust-lang/rust",
+      "issue": 161989,
+      "recorded_at": "2026-08-30",
+      "scenario": "open issue, active high-confidence closing PR",
+      "expect": "REJECT"
+    },
+    {
+      "slug": "cli-13991-assigned",
+      "repo": "cli/cli",
+      "issue": 13991,
+      "recorded_at": "2026-08-30",
+      "scenario": "open, assigned, open + merged PRs",
+      "expect": "CAUTION"
+    },
+    {
+      "slug": "rust-44975-old-quiet",
+      "repo": "rust-lang/rust",
+      "issue": 44975,
+      "recorded_at": "2026-08-30",
+      "scenario": "open, old and inactive",
+      "expect": "CAUTION"
+    },
+    {
+      "slug": "rust-29563-old-quiet",
+      "repo": "rust-lang/rust",
+      "issue": 29563,
+      "recorded_at": "2026-08-30",
+      "scenario": "open, old and inactive, no PRs",
+      "expect": "CAUTION"
+    },
+    {
+      "slug": "rust-90950-linked-pr",
+      "repo": "rust-lang/rust",
+      "issue": 90950,
+      "recorded_at": "2026-08-30",
+      "scenario": "open, merged PR referenced but not closing",
+      "expect": "CAUTION"
+    },
+    {
+      "slug": "rust-147931-linked-pr",
+      "repo": "rust-lang/rust",
+      "issue": 147931,
+      "recorded_at": "2026-08-30",
+      "scenario": "open, stale assignee, non-recent high-confidence PR",
+      "expect": "CAUTION"
+    },
+    {
+      "slug": "rust-110011-tracking",
+      "repo": "rust-lang/rust",
+      "issue": 110011,
+      "recorded_at": "2026-08-30",
+      "scenario": "open tracking issue, many PRs",
+      "expect": "CAUTION"
+    },
+    {
+      "slug": "cli-14297-fresh",
+      "repo": "cli/cli",
+      "issue": 14297,
+      "recorded_at": "2026-08-30",
+      "scenario": "fresh open, unassigned, no PRs, active repo",
+      "expect": "GO"
+    },
+    {
+      "slug": "cli-14293-fresh",
+      "repo": "cli/cli",
+      "issue": 14293,
+      "recorded_at": "2026-08-30",
+      "scenario": "fresh open, unassigned, no PRs, active repo",
+      "expect": "GO"
+    }
+  ]
+}

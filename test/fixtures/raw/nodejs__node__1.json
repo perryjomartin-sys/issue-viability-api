@@ -1,0 +1,1 @@
+{"data":{"rateLimit":{"cost":1,"remaining":4966,"resetAt":"2026-08-30T20:29:50Z"},"repository":{"isArchived":false,"isDisabled":false,"pushedAt":"2026-08-30T18:44:06Z","updatedAt":"2026-08-30T18:45:01Z","defaultBranchRef":{"target":{"committedDate":"2026-08-30T18:44:06Z"}},"issueOrPullRequest":{"__typename":"PullRequest","number":1}}}}

@@ -1,0 +1,1 @@
+{"data":{"rateLimit":{"cost":1,"remaining":4963,"resetAt":"2026-08-30T20:29:50Z"},"repository":null},"errors":[{"type":"NOT_FOUND","path":["repository"],"locations":[{"line":4,"column":3}],"message":"Could not resolve to a Repository with the name 'octocat/this-repo-does-not-exist-xyz'."}]}

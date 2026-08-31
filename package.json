@@ -1,0 +1,21 @@
+{
+  "name": "issue-viability-api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "HTTP API that tells an AI coding agent whether a public GitHub issue is still rational to work on.",
+  "scripts": {
+    "test": "node --experimental-strip-types --test 'test/*.test.ts'",
+    "typecheck": "tsc --noEmit",
+    "dev": "node --experimental-strip-types src/server.ts",
+    "record-fixtures": "node scripts/record-fixtures.mjs"
+  },
+  "dependencies": {
+    "@hono/node-server": "^1.13.7",
+    "hono": "^4.6.14"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "typescript": "^5.7.2"
+  }
+}
