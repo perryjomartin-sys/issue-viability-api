@@ -11,6 +11,11 @@ import { createApp } from "../src/app.ts";
 import { buildRoutes, readPaymentConfig } from "../src/payments.ts";
 import { checkIfBazaarNeeded } from "@x402/core/server";
 import { makeSignals } from "./helpers.ts";
+import { MemoryRateBudget } from "../src/rate-budget.ts";
+
+/** An already-known ample budget so payment tests are not gated on GET /rate_limit. */
+const readyBudget = () =>
+  new MemoryRateBudget({ remaining: 5_000, resetAtMs: 4_102_444_800_000, cost: 1 });
 
 const TODAY = new Date("2026-08-30T12:00:00Z");
 const PAY_TO = "0x000000000000000000000000000000000000dEaD";
@@ -49,6 +54,7 @@ function enabledApp(overrides: Record<string, string> = {}, signalSource?: () =>
     {
       now: () => TODAY,
       facilitatorClient: stubFacilitator,
+      rateBudget: readyBudget(),
       signalSource:
         signalSource ??
         (async () => {
@@ -63,7 +69,10 @@ function enabledApp(overrides: Record<string, string> = {}, signalSource?: () =>
 describe("x402 payment gate", () => {
   it("is OFF by default — POST /v1/check works with no payment", async () => {
     let calls = 0;
-    const app = createApp({}, { now: () => TODAY, signalSource: async () => { calls++; return makeSignals(); } });
+    const app = createApp(
+      {},
+      { now: () => TODAY, rateBudget: readyBudget(), signalSource: async () => { calls++; return makeSignals(); } },
+    );
     const res = await post(app, { repo: "cli/cli", issue: 1 });
     expect(res.status).toBe(200);
     expect(((await res.json()) as any).recommendation).toBe("GO");

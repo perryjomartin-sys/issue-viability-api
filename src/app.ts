@@ -3,12 +3,25 @@ import { join } from "node:path";
 import { Hono, type Context } from "hono";
 
 import { MemoryCache, freshness, toStale, type ViabilityCache } from "./cache.ts";
-import { CONFIG } from "./config.ts";
 import { assess } from "./decision.ts";
 import { ymd } from "./dates.ts";
-import { fetchSignals, parseRepoSlug, type FetchLike } from "./github.ts";
+import {
+  fetchRateLimit,
+  fetchSignals,
+  parseRepoSlug,
+  type FetchLike,
+  type RateLimitSnapshot,
+} from "./github.ts";
 import { parseGraphQL } from "./parse.ts";
 import { installPaymentGate, paymentGateActive, readPaymentConfig } from "./payments.ts";
+import {
+  FALLBACK_RETRY_MS,
+  MemoryRateBudget,
+  RESERVATION_COST_FLOOR,
+  type RateBudget,
+  type Reconciliation,
+  type ReserveDecision,
+} from "./rate-budget.ts";
 import type { FacilitatorClient } from "@x402/core/server";
 import {
   GitHubNotAnIssueError,
@@ -47,7 +60,21 @@ export interface AppDeps {
   now?: () => Date;
   /** Injectable x402 facilitator client (tests) so the payment gate stays offline. */
   facilitatorClient?: FacilitatorClient;
+  /**
+   * Injectable shared rate-budget store. Defaults to a process-local
+   * `MemoryRateBudget`; a Worker passes a Durable-Object-backed implementation.
+   */
+  rateBudget?: RateBudget;
+  /**
+   * Injectable authoritative-recovery source (tests). Defaults to a real
+   * `GET /rate_limit` call with the configured token. Used only when the rate
+   * budget elects this request to recover an unknown GraphQL points budget.
+   */
+  rateLimitSource?: () => Promise<RateLimitSnapshot>;
 }
+
+/** "Never resets" — used for the synthetic budget in offline fixture-replay mode. */
+const OFFLINE_RESET_MS = 4_102_444_800_000; // 2100-01-01T00:00:00Z
 
 const INFO = `Issue Viability API
 
@@ -84,21 +111,39 @@ export function createApp(env: AppEnv = {}, deps: AppDeps = {}): Hono {
   const paymentCfg = readPaymentConfig(env as Record<string, string | undefined>);
   installPaymentGate(app, paymentCfg, deps.facilitatorClient);
 
-  // G4 — CONFIG.RATE_LIMIT_FLOOR enforcement in the runtime layer. Once the
-  // GitHub token's remaining GraphQL budget is seen below the floor, stop making
-  // live calls until the window resets: serve a valid stale cache if we have
-  // one, else 503 + Retry-After. State is per app instance here; a production
-  // Worker would hold it in KV / a Durable Object.
-  let budget: { remaining: number; resetAtMs: number } | null = null;
+  // CONFIG.RATE_LIMIT_FLOOR enforcement, behind the shared RateBudget abstraction
+  // (atomic reserve -> fetch -> reconcile; see src/rate-budget.ts). The default
+  // MemoryRateBudget is per process; a Worker injects a Durable-Object-backed
+  // implementation that coordinates the one GitHub credential fleet-wide.
+  // Offline fixture-replay mode never calls GitHub, so start with a synthetic
+  // known budget (no cold-start recovery ceremony); otherwise start UNKNOWN so
+  // the first live request performs a GET /rate_limit recovery.
+  const rateBudget: RateBudget =
+    deps.rateBudget ??
+    (env.IVA_DEV_FIXTURES
+      ? new MemoryRateBudget({ remaining: 5_000, resetAtMs: OFFLINE_RESET_MS, cost: 1 })
+      : new MemoryRateBudget());
 
-  const budgetBlocks = (nowMs: number): boolean => {
-    if (!budget) return false;
-    if (nowMs >= budget.resetAtMs) {
-      budget = null; // window reset — GitHub budget refills
-      return false;
+  /** Settle a reservation. Never throws: a failed reconcile leaves the
+   *  reservation in place, held to the reset window (over-block, never a bypass). */
+  const settle = async (id: string, result: Reconciliation, nowMs: number): Promise<void> => {
+    try {
+      await rateBudget.reconcile(id, result, nowMs);
+    } catch {
+      /* fail closed: do not retry here, do not release */
     }
-    return budget.remaining < CONFIG.RATE_LIMIT_FLOOR;
   };
+
+  /** Authoritative GraphQL points budget via GitHub's non-chargeable
+   *  `GET /rate_limit`. Only called when the rate budget elects this request.
+   *  (In offline fixture-replay mode the budget is pre-seeded, so this is never
+   *  reached — see `rateBudget` above.) */
+  const getRateLimit: () => Promise<RateLimitSnapshot> =
+    deps.rateLimitSource ??
+    (() => {
+      if (!env.GITHUB_TOKEN) throw new GitHubUpstreamError("no GitHub token configured");
+      return fetchRateLimit({ token: env.GITHUB_TOKEN, fetchImpl: deps.fetchImpl });
+    });
 
   const getSignals: (repo: string, issue: number) => Promise<Signals> =
     deps.signalSource ??
@@ -150,36 +195,112 @@ export function createApp(env: AppEnv = {}, deps: AppDeps = {}): Hono {
       return c.json(cached!.body, 200);
     }
 
-    // G4 — below the rate-limit floor: never make another live call.
-    if (budgetBlocks(nowMs)) {
+    // Atomically reserve headroom for a live call. A thrown error from the store
+    // is treated as "blocked" (fail closed), never bypassed.
+    let reservation: ReserveDecision;
+    try {
+      reservation = await rateBudget.reserveLiveCall(nowMs);
+    } catch {
+      reservation = { ok: false, retryAfterMs: FALLBACK_RETRY_MS };
+    }
+
+    // Budget unknown and we were elected to recover it: run the authoritative,
+    // non-chargeable GET /rate_limit, persist it, and bounce this request so it
+    // retries against a known budget. A chargeable assessment is NEVER used to
+    // discover the budget; a failed recovery admits ZERO assessments.
+    if (!reservation.ok && "recover" in reservation) {
+      const recoveryToken = reservation.recoveryToken;
+      let recovered = false;
+      let backoffMs = FALLBACK_RETRY_MS;
+      try {
+        const rl = await getRateLimit();
+        await rateBudget.recover(
+          recoveryToken,
+          {
+            outcome: "observed",
+            rateLimit: {
+              remaining: rl.graphqlRemaining,
+              resetAtMs: rl.graphqlResetAtMs,
+              cost: RESERVATION_COST_FLOOR,
+            },
+          },
+          nowMs,
+        );
+        recovered = true;
+      } catch (err) {
+        const secondaryMs =
+          err instanceof GitHubRateLimitedError ? err.retryAfterSeconds * 1000 : undefined;
+        if (secondaryMs !== undefined) backoffMs = secondaryMs;
+        try {
+          // Persist a recovery backoff so a non-compliant client cannot drive
+          // repeated serial GET /rate_limit calls. Only the current lease owner
+          // (this token) can set it.
+          await rateBudget.recover(recoveryToken, { outcome: "failed", retryAfterMs: secondaryMs }, nowMs);
+        } catch {
+          /* recovery lease will TTL-clear on its own; a fresh caller retries */
+        }
+      }
       if (freshness(cached, nowMs) === "stale") {
         c.header("x-cache", "stale");
         return c.json(toStale(cached!.body), 200);
       }
-      const retry = Math.max(1, Math.ceil((budget!.resetAtMs - nowMs) / 1000));
-      c.header("retry-after", String(retry));
+      const retryMs = recovered ? reservation.retryAfterMs : backoffMs;
+      c.header("retry-after", String(Math.min(3600, Math.max(1, Math.ceil(retryMs / 1000)))));
+      return c.json(
+        {
+          error: "rate_limited",
+          detail: recovered
+            ? "learning GitHub API budget; retry shortly"
+            : "GitHub API budget unavailable; retry after backoff",
+        },
+        503,
+      );
+    }
+
+    if (!reservation.ok) {
+      if (freshness(cached, nowMs) === "stale") {
+        c.header("x-cache", "stale");
+        return c.json(toStale(cached!.body), 200);
+      }
+      c.header(
+        "retry-after",
+        String(Math.min(3600, Math.max(1, Math.ceil(reservation.retryAfterMs / 1000)))),
+      );
       return c.json(
         { error: "rate_limited", detail: "GitHub API budget below the safe floor; retry after reset" },
         503,
       );
     }
 
+    const reservationId = reservation.reservationId;
+    let signals: Signals;
     try {
-      const signals = await getSignals(repo!, issue!);
-      const body = assess(signals, today);
-      cache.set(key, body, nowMs);
-      if (signals.rateLimit) {
-        const resetAtMs = Date.parse(signals.rateLimit.resetAt);
-        budget = {
-          remaining: signals.rateLimit.remaining,
-          resetAtMs: Number.isFinite(resetAtMs) ? resetAtMs : nowMs + 3_600_000,
-        };
-      }
-      c.header("x-cache", "miss");
-      return c.json(body, 200);
+      signals = await getSignals(repo!, issue!);
     } catch (err) {
+      // A GraphQL request may have been dispatched and charged even though we
+      // got no response. Keep the reserved cost debited (fail closed).
+      await settle(reservationId, { outcome: "indeterminate" }, nowMs);
       return handleError(c, err, cached, nowMs);
     }
+
+    const body = assess(signals, today);
+    cache.set(key, body, nowMs);
+    // GraphQL success -> authoritative rateLimit. A REST fallback (rateLimit
+    // null) means the GraphQL attempt failed at transport *after being sent*,
+    // so it may still have been charged: indeterminate, not "not-sent".
+    const result: Reconciliation = signals.rateLimit
+      ? {
+          outcome: "observed",
+          rateLimit: {
+            remaining: signals.rateLimit.remaining,
+            resetAtMs: parseResetAt(signals.rateLimit.resetAt, nowMs),
+            cost: signals.rateLimit.cost > 0 ? signals.rateLimit.cost : 1,
+          },
+        }
+      : { outcome: "indeterminate" };
+    await settle(reservationId, result, nowMs);
+    c.header("x-cache", "miss");
+    return c.json(body, 200);
   });
 
   return app;
@@ -210,6 +331,12 @@ function isValidRepoSlug(repo: string): boolean {
   } catch {
     return false;
   }
+}
+
+/** GitHub `rateLimit.resetAt` (ISO) -> epoch ms; falls back to now + 1h. */
+function parseResetAt(iso: string, nowMs: number): number {
+  const t = Date.parse(iso);
+  return Number.isFinite(t) ? t : nowMs + 3_600_000;
 }
 
 function handleError(

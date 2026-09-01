@@ -196,6 +196,68 @@ async function tryRest(o: Required<FetchSignalsOptions>): Promise<Signals> {
  * GraphQL first (1 request). On transport failure (not "not found", not
  * "rate limited", not "is a PR") fall back to REST. Propagate typed errors.
  */
+/* --------------------------- authoritative recovery --------------------------- */
+
+/** GraphQL points budget as reported by GitHub's `GET /rate_limit`. */
+export interface RateLimitSnapshot {
+  /** `resources.graphql.remaining`. */
+  graphqlRemaining: number;
+  /** `resources.graphql.reset` (epoch seconds) converted to epoch ms. */
+  graphqlResetAtMs: number;
+}
+
+export interface FetchRateLimitOptions {
+  token: string;
+  fetchImpl?: FetchLike;
+  timeoutMs?: number;
+}
+
+/**
+ * `GET https://api.github.com/rate_limit` — the authoritative, non-chargeable
+ * way to learn the GraphQL points budget for cold start / post-reset / recovery
+ * synchronisation. This endpoint does NOT consume the REST primary rate limit,
+ * though it can still contribute to secondary (abuse) limiting, so the caller
+ * MUST use it sparingly: single-flight only, honour `Retry-After` on a
+ * secondary limit, never in a tight loop.
+ *
+ * Reads `resources.graphql.remaining` and `resources.graphql.reset` only — the
+ * shared floor protects GitHub's GraphQL primary resource, not REST core.
+ *
+ * Throws `GitHubRateLimitedError` (with a conservative retry) on 403/429, and
+ * `GitHubUpstreamError` on 401 / any other non-2xx / a malformed body.
+ */
+export async function fetchRateLimit(opts: FetchRateLimitOptions): Promise<RateLimitSnapshot> {
+  const fetchImpl = opts.fetchImpl ?? (globalThis.fetch as FetchLike);
+  if (!opts.token) throw new GitHubUpstreamError("no GitHub token configured");
+
+  const { signal, done } = withTimeout(opts.timeoutMs ?? 6000);
+  let res: Response;
+  try {
+    res = await fetchImpl(`${REST_ROOT}/rate_limit`, { headers: headers(opts.token), signal });
+  } finally {
+    done();
+  }
+
+  if (res.status === 401) throw new GitHubUpstreamError("GitHub rejected the credential (401)");
+  if (res.status === 403 || res.status === 429) {
+    // Secondary / abuse limit even on /rate_limit — back off conservatively.
+    throw new GitHubRateLimitedError(retryAfterFrom(res), "GitHub /rate_limit secondary-limited");
+  }
+  if (!res.ok) throw new GitHubUpstreamError(`GitHub /rate_limit returned ${res.status}`);
+
+  let body: any = null;
+  try {
+    body = await res.json();
+  } catch {
+    /* leave null */
+  }
+  const g = body?.resources?.graphql;
+  if (!g || typeof g.remaining !== "number" || typeof g.reset !== "number") {
+    throw new GitHubUpstreamError("GitHub /rate_limit: missing resources.graphql");
+  }
+  return { graphqlRemaining: g.remaining, graphqlResetAtMs: g.reset * 1000 };
+}
+
 export async function fetchSignals(opts: FetchSignalsOptions): Promise<Signals> {
   const o: Required<FetchSignalsOptions> = {
     fetchImpl: opts.fetchImpl ?? (globalThis.fetch as FetchLike),

@@ -1,0 +1,31 @@
+{
+  // Cloudflare Worker config — LOCAL ONLY. Not deployed. No account configured.
+  // Wrangler is not installed; `wrangler deploy --dry-run` (bundle-size check)
+  // is still outstanding — see HANDOFF "STEP-G — REMAINING FOR TESTNET".
+  "name": "issue-viability-api",
+  "main": "src/worker/index.ts",
+  "compatibility_date": "2026-08-04",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+
+  // Shared rate-limit-floor coordination for the single GitHub credential.
+  // SQLite-backed DO — allowed on the Workers Free plan via new_sqlite_classes.
+  "durable_objects": {
+    "bindings": [{ "name": "RATE_BUDGET", "class_name": "RateBudgetDO" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["RateBudgetDO"] }],
+
+  // Non-secret config. Base Sepolia (eip155:84532) is the ONLY network the code
+  // will price on — enforced in src/payments.ts, not here.
+  "vars": {
+    "X402_ENABLED": "false",
+    "X402_PRICE": "$0.005",
+    "X402_BAZAAR": "true"
+  }
+
+  // Secrets, set with `wrangler secret put <NAME>` (NOT done):
+  //   GITHUB_TOKEN     GitHub read token
+  //   X402_PAY_TO      Base Sepolia address that receives testnet USDC
+  //   X402_RESOURCE_URL  public URL of POST /v1/check (for discovery)
+  //   X402_FACILITATOR_URL  optional; defaults to https://x402.org/facilitator
+}

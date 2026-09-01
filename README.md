@@ -41,9 +41,12 @@ Phase-1 build, steps **A–G** of the agreed plan. Steps done:
 | D | Real-world evaluation (`test/evaluation.test.ts`, 23 recorded GitHub fixtures) | false-GO = 0 |
 | E | Local endpoint (`src/app.ts` + `src/server.ts`, Hono) | runs |
 | F | Independent GPT-5.6 diff review | **done — findings F1–F5 remediated (see HANDOFF.md)** |
-| G | Base-Sepolia x402 V2 payment gate (`src/payments.ts`) | **local implementation done; not deployed** |
+| G | Base-Sepolia x402 V2 payment gate + shared rate budget + Worker scaffold | **local implementation done; not deployed** |
 
-No deployment. No paid Cloudflare plan. No `@x402/*` packages installed yet.
+The x402 V2 packages (`@x402/hono`, `@x402/core`, `@x402/evm`, `@x402/extensions`,
+pinned to `2.24.0`) are installed and the payment gate is implemented and tested
+locally. Nothing is deployed; no Cloudflare account, no wallet, no funds. The
+optional `@x402/paywall` browser wallet UI is intentionally not installed.
 
 ## Run it locally
 
@@ -161,17 +164,61 @@ npm run dev
 | `X402_BAZAAR` | emit the x402 Bazaar discovery extension | on |
 
 Unpaid API requests get **402** with a `Payment-Required` header (x402 V2) and a
-JSON body; browsers get the paywall page. `GET /` and `GET /health` are never
-gated. Built on `@x402/hono`, `@x402/core`, `@x402/evm`, `@x402/extensions`
-(Bazaar), `@x402/paywall` — all pinned to `2.24.0`.
+JSON body; a browser hit gets the middleware's built-in plain-HTML instructions
+page (no `@x402/paywall`). `GET /` and `GET /health` are never gated. Built on
+`@x402/hono`, `@x402/core`, `@x402/evm`, `@x402/extensions` (Bazaar) — all pinned
+to `2.24.0`.
 
 ### Rate-limit floor (enforced)
 
-Once a fetch reports the GitHub token's remaining GraphQL budget below
-`CONFIG.RATE_LIMIT_FLOOR` (150), the app stops making live calls until the rate
-window resets: it serves a valid **stale cache** if one exists, otherwise
-**503 + `Retry-After`**. State is per process here; a production Worker would
-hold it in KV / a Durable Object.
+A live GitHub call is admitted only if reserving it keeps the credential's
+**projected** remaining GraphQL points at/above `CONFIG.RATE_LIMIT_FLOOR` (150).
+Otherwise the app serves a valid **stale cache** if one exists, else
+**503 + `Retry-After`**, until the rate window resets.
+
+This is an **atomic reservation** (`src/rate-budget.ts`), not a read-only check:
+`reserveLiveCall()` persists an in-flight reservation *before* returning `ok`,
+so N concurrent cache misses subtract each other's projected cost and only as
+many as the floor allows proceed. The GitHub fetch happens outside the store;
+`reconcile(id, result)` then settles it:
+
+- **observed** — release, fold the authoritative `rateLimit` in monotonically
+  (within a window keep `min(remaining)`; never let an older window overwrite a
+  newer one).
+- **indeterminate** — the fetch failed/timed out or fell back to REST, so the
+  GraphQL request *may already have been charged*: keep the reserved cost
+  debited until the window resets. Fail closed — never released on a guess.
+
+Reserved cost per assessment is 1 GraphQL point (the observed cost of the single
+non-paginated query; auto-widens if GitHub ever reports more). This floor
+governs GitHub's GraphQL **points** bucket; the REST fallback draws the separate
+REST request bucket.
+
+The budget is learned only from GitHub's non-chargeable `GET /rate_limit`. While
+it is unknown (cold start / post-reset) no assessment is admitted: one caller is
+elected — under a single-use **owner token** — to run `GET /rate_limit`, the
+rest wait. Only that token's holder may fold the result back in, and it does so
+monotonically (same window `min(remaining)`, cost never down, older window
+ignored, newer window adopted), so a slow/duplicate recovery cannot reopen
+capacity. A failed or secondary-limited recovery persists a backoff (the
+server's `Retry-After`, else 60 s) during which no election and no assessment
+happen — a non-compliant client cannot drive repeated `GET /rate_limit` calls.
+
+The default `MemoryRateBudget` is per process (fine for `npm run dev`). A
+multi-instance / Worker deployment injects `RateBudgetDO`
+(`src/worker/rate-budget-do.ts`) — a **SQLite-backed Durable Object**, the
+serialization boundary, so the one credential is coordinated fleet-wide. A
+`reserveLiveCall` store failure **fails closed** (blocks); a failed `reconcile`
+leaves the reservation held to the window reset (temporary over-block, never a
+bypass).
+
+## Cloudflare Worker (not deployed)
+
+`src/worker/index.ts` runs the same Hono app with the DO-backed rate budget;
+`wrangler.jsonc` has the binding, the `new_sqlite_classes` migration (allowed on
+Workers **Free**), and `compatibility_date 2026-08-04`. `wrangler` is **not
+installed** and nothing is deployed — the `wrangler deploy --dry-run`
+bundle-size check is still outstanding.
 
 ## Deployment (not done)
 

@@ -10,8 +10,12 @@
  * the facilitator `/supported` endpoint; verify/settle are called only on a paid
  * request. Tests inject a local `FacilitatorClient` stub to stay offline.
  *
+ * This is an agent-first API: the optional `@x402/paywall` browser wallet UI is
+ * deliberately NOT installed. Non-browser clients get a JSON 402; a browser hit
+ * falls back to the middleware's built-in plain-HTML payment-instructions page.
+ *
  * Uses the current x402 V2 packages: `@x402/hono`, `@x402/core`, `@x402/evm`,
- * `@x402/extensions` (Bazaar discovery), `@x402/paywall` (peer).
+ * `@x402/extensions` (Bazaar discovery).
  */
 import { paymentMiddleware, x402ResourceServer } from "@x402/hono";
 import { HTTPFacilitatorClient } from "@x402/core/server";
@@ -152,7 +156,6 @@ export function installPaymentGate(
     new ExactEvmScheme(),
   );
 
-  const paywallConfig = { appName: "Issue Viability API", testnet: true };
-
-  app.use(paymentMiddleware(buildRoutes(cfg), resourceServer, paywallConfig));
+  // No paywallConfig / custom paywall provider — agent-first, no browser wallet UI.
+  app.use(paymentMiddleware(buildRoutes(cfg), resourceServer));
 }

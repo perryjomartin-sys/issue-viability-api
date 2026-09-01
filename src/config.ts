@@ -21,15 +21,27 @@ export const CONFIG = {
   /** Cache: total seconds retained; 600..3600 is stale-fallback only. */
   CACHE_STALE_SECONDS: 3600,
   /**
-   * Intended floor: once the GitHub token's remaining GraphQL budget drops
-   * below this, serve cache-only until the window resets.
+   * Floor on the GitHub credential's projected remaining GraphQL points. A live
+   * call is admitted only if reserving it keeps the projection at/above this;
+   * otherwise serve a valid stale cache, else 503 + `Retry-After`, until the
+   * window resets (`rateLimit.resetAt`).
    *
-   * NOT ENFORCED in this build. Cross-request budget management needs shared,
-   * durable state; the local `MemoryCache` stub is per-process and per-run.
-   * Enforcement is a Step-G requirement in the production Worker/KV layer:
-   * after each fetch, inspect `signals.rateLimit.remaining` and, below this
-   * floor, refuse live calls (503 / stale cache) until `rateLimit.resetAt`.
-   * `fetchSignals` already surfaces `rateLimit` on every GraphQL result.
+   * ENFORCED via the atomic-reservation `RateBudget` (`src/rate-budget.ts`,
+   * wired in `src/app.ts`): reserve -> fetch -> reconcile, so concurrent cache
+   * misses subtract each other's projected cost before any response returns. A
+   * fetch that fails/times out is reconciled as `indeterminate` — the GraphQL
+   * request may have been charged, so its reserved cost stays debited until the
+   * window resets (fail closed). The budget itself is learned ONLY from GitHub's
+   * non-chargeable `GET /rate_limit` (`resources.graphql`): while it is unknown
+   * (cold start / post-reset) NO assessment is admitted — one caller is elected,
+   * under a single-use owner token, to recover it, the rest wait. Only that
+   * token's holder may fold the result in (monotonically), and a failed recovery
+   * persists a backoff (server `Retry-After`, else 60 s) during which no
+   * election and no assessment occur — zero chargeable assessments either way.
+   * Governs GitHub's GraphQL *points* bucket only; the REST fallback draws the
+   * separate REST request bucket. The default `MemoryRateBudget` is per process
+   * (fine for `npm run dev`); a Worker injects `RateBudgetDO`
+   * (`src/worker/rate-budget-do.ts`, a SQLite Durable Object).
    */
   RATE_LIMIT_FLOOR: 150,
 } as const;
