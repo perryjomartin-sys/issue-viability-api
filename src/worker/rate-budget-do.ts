@@ -9,13 +9,19 @@
  *
  * Decision logic is the shared pure `admit` / `applyReconcile` / `applyRecovery`
  * from `../rate-budget.ts`, so the DO and `MemoryRateBudget` cannot drift. This
- * file only maps that state to/from SQLite (`state.storage.sql`) — allowed on
+ * file only maps that state to/from SQLite (`ctx.storage.sql`) — allowed on
  * the Workers **Free** plan via a `new_sqlite_classes` migration (see
  * `wrangler.jsonc`). NOT imported by the Node entrypoint and NOT deployed.
  *
- * Minimal Cloudflare ambient types are declared locally to avoid adding
- * `@cloudflare/workers-types` as a dependency.
+ * Minimal Cloudflare ambient types are declared locally (`cloudflare-workers.d.ts`)
+ * to avoid adding `@cloudflare/workers-types` as a dependency. The class DOES
+ * import the real `DurableObject` base from `cloudflare:workers` — extending it
+ * is what makes `reserveLiveCall` / `reconcile` / `recover` dispatch over RPC
+ * from the Worker (a plain class exposes only `fetch()`). `node:test` runs map
+ * that bare specifier to a shim (see `test/shims/`).
  */
+import { DurableObject } from "cloudflare:workers";
+
 import {
   FALLBACK_RETRY_MS,
   admit,
@@ -28,25 +34,9 @@ import {
   type ReserveDecision,
 } from "../rate-budget.ts";
 
-/* --- minimal Cloudflare ambient shapes (only what this file touches) --- */
-interface SqlStorageCursor {
-  toArray(): Array<Record<string, unknown>>;
-}
-interface SqlStorage {
-  exec(query: string, ...bindings: unknown[]): SqlStorageCursor;
-}
-interface DurableObjectStorage {
-  sql: SqlStorage;
-  /**
-   * Run `closure` as one synchronous SQLite transaction. If it throws, every
-   * statement it issued is rolled back and the error propagates. Cloudflare
-   * Durable Object SQLite API.
-   */
-  transactionSync<T>(closure: () => T): T;
-}
-interface DurableObjectState {
-  storage: DurableObjectStorage;
-}
+/* --- minimal Cloudflare ambient shapes (only what this file touches) ---
+ * `SqlStorage` / `DurableObjectStorage` / `DurableObjectState` are global,
+ * declared in `cloudflare-workers.d.ts`. Only the stub-side shapes are local. */
 interface DurableObjectId {
   toString(): string;
 }
@@ -80,13 +70,14 @@ const SINGLETON_NAME = "github-credential";
  *
  * Never deployed, so `CREATE TABLE` here is the whole schema (no ALTER needed).
  */
-export class RateBudgetDO {
+export class RateBudgetDO extends DurableObject {
   #sql: SqlStorage;
   #storage: DurableObjectStorage;
 
-  constructor(state: DurableObjectState) {
-    this.#storage = state.storage;
-    this.#sql = state.storage.sql;
+  constructor(ctx: DurableObjectState, env: unknown) {
+    super(ctx, env);
+    this.#storage = ctx.storage;
+    this.#sql = ctx.storage.sql;
     this.#sql.exec(
       "CREATE TABLE IF NOT EXISTS budget_state (" +
         "id INTEGER PRIMARY KEY CHECK (id = 1), " +
@@ -231,7 +222,18 @@ export function durableObjectRateBudget(namespace: DurableObjectNamespace): Rate
     async reserveLiveCall(nowMs: number): Promise<ReserveDecision> {
       try {
         return await stub().reserveLiveCall(nowMs);
-      } catch {
+      } catch (err) {
+        // FAIL CLOSED (block, never admit) — but surface the cause. A broken DO
+        // binding, a class that is not RPC-eligible, or a runtime error inside
+        // the DO all land here; without this line the app reports the generic
+        // "GitHub API budget below the safe floor" 503 and the real fault is
+        // invisible. Nothing sensitive is in scope on the reserve path: no
+        // reservationId and no recoveryToken exist yet, so only `nowMs` and the
+        // error are logged.
+        console.error(
+          `[RATE_BUDGET] reserveLiveCall RPC failed (nowMs=${nowMs}); failing closed:`,
+          err,
+        );
         return { ok: false, retryAfterMs: FALLBACK_RETRY_MS };
       }
     },

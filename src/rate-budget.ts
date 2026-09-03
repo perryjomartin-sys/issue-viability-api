@@ -35,9 +35,13 @@
  * lease, or change the backoff.
  *
  * MONOTONIC RECOVERY. A current-owner `observed` recovery folds in exactly like
- * a normal `observed` reconcile: same window -> `min(remaining)`, `cost` never
- * decreases; a strictly older window is ignored; a strictly newer window is
- * adopted. A delayed higher `remaining` can never reopen capacity.
+ * a normal `observed` reconcile: a strictly newer reset window is adopted;
+ * otherwise `remaining` and `resetAtMs` only decrease and `cost` never
+ * decreases. GitHub has returned slightly different reset timestamps for the
+ * same live GraphQL window (for example, `GET /rate_limit` then the query), so
+ * a lower timestamp is not sufficient evidence to discard a lower remaining
+ * count. A delayed older-window observation can only cause conservative
+ * over-blocking, never reopen capacity.
  *
  * PERSISTED RECOVERY BACKOFF. A failed / secondary-limited recovery (current
  * owner) persists `recoveryNotBeforeMs = now + (Retry-After | FALLBACK_RETRY_MS)`.
@@ -292,9 +296,9 @@ export function admit(
  *    holds it to the window reset.
  *  - `observed` / `not-sent` -> release the reservation; `observed` also folds
  *    the authoritative value in monotonically and reset-window aware:
- *      * same window   -> `min(remaining)` (a delayed higher value can't reopen)
  *      * strictly newer -> adopt it, drop now-superseded indeterminate debits
- *      * strictly older -> ignore the budget (a stale straggler)
+ *      * same/older-or-ambiguous -> `min(remaining, resetAtMs)` and
+ *        `max(cost)`; GitHub's reset timestamp is not a unique window ID
  */
 export function applyReconcile(
   snap: BudgetSnapshot,
@@ -330,15 +334,21 @@ export function applyReconcile(
           recovery: s.recovery,
           recoveryNotBeforeMs: s.recoveryNotBeforeMs,
         };
-      }
-      if (observed.resetAtMs === authoritative.resetAtMs) {
+      } else {
+        // A lower reset timestamp is not proof of an older GraphQL window:
+        // GitHub has returned a later timestamp from GET /rate_limit than from
+        // the immediately following successful GraphQL response in one live
+        // window. Dropping that response would release its reservation while
+        // retaining a stale-high remaining value, which can over-admit. Fold
+        // all non-newer observations downward instead. A genuinely old delayed
+        // response may over-block or trigger an early recovery, but cannot
+        // create a false admission.
         authoritative = {
           remaining: Math.min(authoritative.remaining, observed.remaining), // monotonic down
-          resetAtMs: authoritative.resetAtMs,
+          resetAtMs: Math.min(authoritative.resetAtMs, observed.resetAtMs),
           cost: Math.max(authoritative.cost, observed.cost),
         };
       }
-      // observed.resetAtMs < authoritative.resetAtMs -> older window: ignore budget.
     }
   }
   return {
@@ -364,9 +374,9 @@ export function applyReconcile(
  *  - `observed`, window already elapsed -> discard (stays UNKNOWN), clear lease,
  *                  keep any existing backoff.
  *  - `observed`, live window -> fold in monotonically (same rules as
- *                  `applyReconcile`'s `observed`: same window `min(remaining)` /
- *                  `cost` never down; older window ignored; newer window
- *                  adopted), clear the lease, and clear `recoveryNotBeforeMs`
+ *                  `applyReconcile`'s `observed`: a newer window is adopted;
+ *                  every non-newer observation can only lower remaining/reset
+ *                  and raise cost), clear the lease, and clear `recoveryNotBeforeMs`
  *                  (a healthy authoritative read supersedes any prior backoff).
  *
  * CONSERVATIVE RESERVATION HANDLING. A recovery result NEVER erases outstanding
@@ -413,14 +423,13 @@ export function applyRecovery(
   let authoritative = s.authoritative;
   if (authoritative === null || observed.resetAtMs > authoritative.resetAtMs) {
     authoritative = { ...observed }; // first learn, or a strictly newer window
-  } else if (observed.resetAtMs === authoritative.resetAtMs) {
+  } else {
     authoritative = {
       remaining: Math.min(authoritative.remaining, observed.remaining), // never up
-      resetAtMs: authoritative.resetAtMs,
+      resetAtMs: Math.min(authoritative.resetAtMs, observed.resetAtMs),
       cost: Math.max(authoritative.cost, observed.cost), // never down
     };
   }
-  // observed.resetAtMs < authoritative.resetAtMs -> older window: ignore budget.
 
   return {
     authoritative,

@@ -26,6 +26,9 @@ import {
   type RecoveryResult,
 } from "../src/rate-budget.ts";
 import { RateBudgetDO, durableObjectRateBudget } from "../src/worker/rate-budget-do.ts";
+// Resolves to `test/shims/cloudflare-workers.mjs` under `node:test` (see the
+// `--import` in `package.json`); the real module only exists in workerd.
+import { DurableObject } from "cloudflare:workers";
 
 const T = 1_000_000_000_000;
 const HOUR = 3_600_000;
@@ -113,13 +116,37 @@ describe("admit() / applyReconcile() / normalize() — pure", () => {
     expect(s.reservations).toHaveLength(0);
   });
 
-  it("observed: ignores a strictly older window, adopts a strictly newer one", () => {
+  it("observed: never discards a lower remaining count merely because GitHub reports an earlier reset", () => {
     const base = snap(win(200, T + HOUR), [{ id: "x", createdAtMs: T, indeterminate: false }]);
+    // An already-expired observation is not usable evidence at all.
     expect(applyReconcile(base, "x", obs(win(5, T - 1000)), T).authoritative).toEqual(win(200, T + HOUR));
-    expect(applyReconcile(base, "x", obs(win(5, T + 1000)), T).authoritative).toEqual(win(200, T + HOUR));
+    // GitHub has returned this shape for one live window: GET /rate_limit gives
+    // a later reset and the immediately-following GraphQL result gives a lower
+    // remaining with an earlier reset. Releasing x while retaining 200 would
+    // over-admit; non-newer data must fold downward.
+    expect(applyReconcile(base, "x", obs(win(199, T + HOUR - 1000)), T).authoritative).toEqual(
+      win(199, T + HOUR - 1000),
+    );
     expect(applyReconcile(base, "x", obs(win(4000, T + 2 * HOUR)), T).authoritative).toEqual(
       win(4000, T + 2 * HOUR),
     );
+  });
+
+  it("earlier-reset GraphQL observations cannot over-admit at the rate-limit floor", () => {
+    const initial = snap(win(FLOOR + 1, T + HOUR));
+    const admitted = admit(initial, T, "r1", "tok1");
+    if (!admitted.decision.ok) throw new Error("setup");
+    // Before the fix this lower reset made applyReconcile ignore the real 150
+    // remaining and release r1, leaving 151; a second call was admitted even
+    // though it would take GitHub below the 150 floor.
+    const reconciled = applyReconcile(
+      admitted.next,
+      "r1",
+      obs(win(FLOOR, T + HOUR - 1000)),
+      T,
+    );
+    expect(reconciled.authoritative).toEqual(win(FLOOR, T + HOUR - 1000));
+    expect(admit(reconciled, T, "r2", "tok2").decision.ok).toBe(false);
   });
 
   it("indeterminate: keeps the reservation, marks it, no budget change", () => {
@@ -264,10 +291,13 @@ describe("applyRecovery() — pure", () => {
     expect(next.authoritative).toEqual({ remaining: 149, resetAtMs: T + HOUR, cost: 4 });
   });
 
-  it("current-owner observed: older window ignored, newer window adopted", () => {
+  it("current-owner observed: expired data is ignored, a live earlier reset folds down, newer window adopted", () => {
     const base = snap(win(200, T + HOUR), [], lease(TOK, T));
     expect(applyRecovery(base, TOK, recOk(win(5, T - 1000)), T).authoritative).toEqual(
       win(200, T + HOUR),
+    );
+    expect(applyRecovery(base, TOK, recOk(win(199, T + HOUR - 1000)), T).authoritative).toEqual(
+      win(199, T + HOUR - 1000),
     );
     expect(applyRecovery(base, TOK, recOk(win(4000, T + 2 * HOUR)), T).authoritative).toEqual(
       win(4000, T + 2 * HOUR),
@@ -562,17 +592,31 @@ function fakeSql() {
 const fakeState = (sql: ReturnType<typeof fakeSql>) => ({
   storage: { sql, transactionSync: sql.transactionSync },
 });
+/** Build the DO the way the runtime does: `new RateBudgetDO(ctx, env)`.
+ *  `RateBudgetDO` binds no `env`, so `{}` stands in. */
+const newDO = (sql: ReturnType<typeof fakeSql>) =>
+  new RateBudgetDO(fakeState(sql) as any, {} as any);
+
+describe("RateBudgetDO — Durable Object RPC eligibility", () => {
+  it("extends the runtime DurableObject base so stub methods dispatch over RPC", () => {
+    // A plain class is a fetch-only ("classic") DO: `stub.reserveLiveCall(...)`
+    // then rejects, the adapter fails closed, and the app returns a spurious
+    // "budget below the safe floor" 503. Extending `DurableObject` is the fix;
+    // this guards against a silent revert.
+    expect(RateBudgetDO.prototype instanceof DurableObject).toBe(true);
+  });
+});
 
 describe("RateBudgetDO — parity with MemoryRateBudget over SQLite", () => {
   it("recovery election is persisted, single-flight across isolates, then adopted", async () => {
     const sql = fakeSql();
-    const a = new RateBudgetDO(fakeState(sql) as any);
+    const a = newDO(sql);
     const e1 = await a.reserveLiveCall(T);
     if (e1.ok || !("recover" in e1)) throw new Error("expected a recovery election");
     expect(sql._peek().recovery?.started_at_ms).toBe(T); // lease persisted
     expect(sql._peek().recovery?.token).toBe(e1.recoveryToken);
 
-    const b = new RateBudgetDO(fakeState(sql) as any); // second isolate, same storage
+    const b = newDO(sql); // second isolate, same storage
     const e2 = await b.reserveLiveCall(T);
     expect(e2.ok).toBe(false);
     expect("recover" in e2).toBe(false); // not re-elected — single-flight
@@ -584,12 +628,12 @@ describe("RateBudgetDO — parity with MemoryRateBudget over SQLite", () => {
 
   it("10. a stale recovery token is inert across isolates; the current owner still resolves", async () => {
     const sql = fakeSql();
-    const a = new RateBudgetDO(fakeState(sql) as any);
+    const a = newDO(sql);
     const e1 = await a.reserveLiveCall(T);
     if (e1.ok || !("recover" in e1)) throw new Error("expected an election");
 
     // a's GET /rate_limit stalls past the TTL; a fresh isolate re-elects.
-    const b = new RateBudgetDO(fakeState(sql) as any);
+    const b = newDO(sql);
     const e2 = await b.reserveLiveCall(T + RECOVERY_TTL_MS + 1);
     if (e2.ok || !("recover" in e2)) throw new Error("expected a re-election");
     expect(e2.recoveryToken).not.toBe(e1.recoveryToken);
@@ -607,7 +651,7 @@ describe("RateBudgetDO — parity with MemoryRateBudget over SQLite", () => {
 
   it("11. a failed recovery persists the backoff row transactionally; it gates the next callers", async () => {
     const sql = fakeSql();
-    const doInst = new RateBudgetDO(fakeState(sql) as any);
+    const doInst = newDO(sql);
     const e1 = await doInst.reserveLiveCall(T);
     if (e1.ok || !("recover" in e1)) throw new Error("expected an election");
     await doInst.recover(e1.recoveryToken, { outcome: "failed", retryAfterMs: 120_000 }, T);
@@ -626,7 +670,7 @@ describe("RateBudgetDO — parity with MemoryRateBudget over SQLite", () => {
 
   it("12. a SQL failure while writing the recovery lease rolls the whole #save back", async () => {
     const sql = fakeSql();
-    const doInst = new RateBudgetDO(fakeState(sql) as any);
+    const doInst = newDO(sql);
     sql._failRecoveryWrite(true);
     let threw = false;
     try {
@@ -647,14 +691,14 @@ describe("RateBudgetDO — parity with MemoryRateBudget over SQLite", () => {
 
   it("concurrent admission + reversed order + indeterminate debit behave identically", async () => {
     const sql = fakeSql();
-    const doInst = new RateBudgetDO(fakeState(sql) as any);
+    const doInst = newDO(sql);
     await seedDO(doInst, win(160));
 
     const rA = await doInst.reserveLiveCall(T);
     const rB = await doInst.reserveLiveCall(T);
     if (!rA.ok || !rB.ok) throw new Error("setup");
 
-    const doInst2 = new RateBudgetDO(fakeState(sql) as any); // second isolate, same storage
+    const doInst2 = newDO(sql); // second isolate, same storage
     expect(sql._peek().reservations).toHaveLength(2);
 
     await doInst2.reconcile(rB.reservationId, obs(win(149)), T);
@@ -665,7 +709,7 @@ describe("RateBudgetDO — parity with MemoryRateBudget over SQLite", () => {
 
   it("indeterminate reconcile persists the flag; the debit survives across isolates", async () => {
     const sql = fakeSql();
-    const a = new RateBudgetDO(fakeState(sql) as any);
+    const a = newDO(sql);
     await seedDO(a, win(FLOOR + 1, T + HOUR));
     const r1 = await a.reserveLiveCall(T);
     if (!r1.ok) throw new Error("setup");
@@ -674,13 +718,13 @@ describe("RateBudgetDO — parity with MemoryRateBudget over SQLite", () => {
     expect(sql._peek().reservations).toEqual([
       { id: r1.reservationId, created_at_ms: T, indeterminate: 1 },
     ]);
-    const b = new RateBudgetDO(fakeState(sql) as any);
+    const b = newDO(sql);
     expect((await b.reserveLiveCall(T)).ok).toBe(false); // 151 - (1 ind + 1) = 149
   });
 
   it("window reset drops to UNKNOWN, wipes tables, and requires a fresh recovery", async () => {
     const sql = fakeSql();
-    const doInst = new RateBudgetDO(fakeState(sql) as any);
+    const doInst = newDO(sql);
     await seedDO(doInst, win(10, T + 1000));
     expect((await doInst.reserveLiveCall(T + 500)).ok).toBe(false); // 10 - 1 < 150
     const afterReset = await doInst.reserveLiveCall(T + 1001);
@@ -691,7 +735,7 @@ describe("RateBudgetDO — parity with MemoryRateBudget over SQLite", () => {
 
   it("8. a SQL failure mid-#save rolls the whole mutation back (no partial reservation set)", async () => {
     const sql = fakeSql();
-    const doInst = new RateBudgetDO(fakeState(sql) as any);
+    const doInst = newDO(sql);
     await seedDO(doInst, win(5000, T + HOUR));
     const rA = await doInst.reserveLiveCall(T);
     const rB = await doInst.reserveLiveCall(T);
@@ -744,6 +788,29 @@ describe("durableObjectRateBudget adapter — fail closed", () => {
     const d = await budget.reserveLiveCall(T);
     expect(d.ok).toBe(false);
     if (!d.ok) expect(d.retryAfterMs).toBeGreaterThan(0);
+  });
+
+  it("a reserveLiveCall RPC failure is logged (fail closed) without leaking a token", async () => {
+    const lines: string[] = [];
+    const orig = console.error;
+    console.error = (...args: unknown[]) => {
+      lines.push(args.map((a) => (a instanceof Error ? a.message : String(a))).join(" "));
+    };
+    try {
+      const budget = durableObjectRateBudget(throwingNamespace as any);
+      const d = await budget.reserveLiveCall(T);
+      expect(d.ok).toBe(false); // still fail closed
+    } finally {
+      console.error = orig;
+    }
+    expect(lines).toHaveLength(1);
+    const line = lines[0]!;
+    expect(line).toContain("RATE_BUDGET");
+    expect(line).toContain("reserveLiveCall");
+    expect(line).toContain("DO unreachable"); // the real cause is surfaced
+    // No reservationId / recoveryToken exists on the reserve path, so none can
+    // be logged; `recoveryToken` must never appear in a diagnostic line.
+    expect(line).not.toContain("recoveryToken");
   });
 
   it("a DO failure in reconcile() is propagated (the app holds the reservation to reset)", async () => {
