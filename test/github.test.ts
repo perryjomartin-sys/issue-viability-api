@@ -174,4 +174,83 @@ describe("fetchSignals — orchestration", () => {
     }
     expect(threw instanceof GitHubNotAnIssueError).toBe(true);
   });
+
+  /* ---- default `fetchImpl` regressions (runtime bugs found via wrangler dev) ---- */
+
+  // A REST fan-out that always succeeds, so a test that reaches REST resolves to
+  // `source: "rest"` instead of throwing — the assertions below hinge on
+  // graphql-vs-rest, not on an error type.
+  const restOk = (url: string): Response | null => {
+    if (url.endsWith("/repos/rust-lang/rust")) {
+      return res({ archived: false, disabled: false, pushed_at: "2026-08-20T00:00:00Z" });
+    }
+    if (url.includes("/issues/44975/timeline")) return res([]);
+    if (url.includes("/issues/44975")) {
+      return res({
+        state: "open",
+        state_reason: null,
+        created_at: "2020-01-01T00:00:00Z",
+        updated_at: "2026-08-25T00:00:00Z",
+        assignees: [],
+      });
+    }
+    if (url.includes("/commits")) return res([]);
+    return null;
+  };
+
+  it("regression: omitting `fetchImpl` uses the global fetch, not `undefined` (spread-order bug)", async () => {
+    // `{ fetchImpl: default, ...opts }` let `...opts` — which carries
+    // `fetchImpl: undefined` whenever a caller omits it — overwrite the default,
+    // so `o.fetchImpl(...)` threw "is not a function" and the request could
+    // never reach GitHub. The fix spreads `...opts` first. Here the GraphQL
+    // call must run on the (stubbed) global fetch.
+    const realFetch = globalThis.fetch;
+    let graphqlHits = 0;
+    globalThis.fetch = (async (url: string) => {
+      if (String(url).includes("/graphql")) {
+        graphqlHits++;
+        return res(realGraphqlBody);
+      }
+      return restOk(String(url)) ?? res("nope", { status: 404, headers: {} });
+    }) as typeof fetch;
+    try {
+      // `app.ts` calls `fetchSignals({ ..., fetchImpl: deps.fetchImpl })` with
+      // `deps.fetchImpl` unset, i.e. the key is present with value `undefined` —
+      // exactly what the old `...opts`-last order let clobber the default.
+      const s = await fetchSignals({
+        owner: "rust-lang",
+        name: "rust",
+        number: 44975,
+        token: "t",
+        fetchImpl: undefined,
+      });
+      expect(s.source).toBe("graphql");
+      expect(graphqlHits).toBe(1);
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
+  it("regression: the default fetch is bound to the global (Workers 'Illegal invocation')", async () => {
+    // `tryGraphQL` invokes `o.fetchImpl(url, init)` as a method, so `this` is the
+    // options object. The Workers runtime's native `fetch` rejects that with
+    // `TypeError: Illegal invocation`; Node's does not. Without `.bind(globalThis)`
+    // on the default, the GraphQL call threw under workerd and the result
+    // silently degraded to the REST fallback. This stub reproduces the check.
+    const realFetch = globalThis.fetch;
+    function pickyFetch(this: unknown, url: string): Promise<Response> {
+      if (this !== undefined && this !== globalThis) {
+        throw new TypeError("Illegal invocation: function called with incorrect `this` reference");
+      }
+      if (String(url).includes("/graphql")) return Promise.resolve(res(realGraphqlBody));
+      return Promise.resolve(restOk(String(url)) ?? res("nope", { status: 404, headers: {} }));
+    }
+    globalThis.fetch = pickyFetch as unknown as typeof fetch;
+    try {
+      const s = await fetchSignals({ owner: "rust-lang", name: "rust", number: 44975, token: "t" });
+      expect(s.source).toBe("graphql"); // pre-fix this was "rest"
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
 });

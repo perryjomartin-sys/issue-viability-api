@@ -59,9 +59,15 @@ function retryAfterFrom(res: Response): number {
 
 async function tryGraphQL(o: Required<FetchSignalsOptions>): Promise<Signals> {
   const { signal, done } = withTimeout(o.timeoutMs);
+  // Call through a bare binding, never `o.fetchImpl(...)`: a method call sets
+  // `this` to `o`, and the Workers runtime's native `fetch` throws
+  // `TypeError: Illegal invocation` unless `this` is the global scope (Node's
+  // `fetch` tolerates it). `tryRest`/`getJson` already pass `fetchImpl` as a
+  // plain argument for the same reason.
+  const { fetchImpl } = o;
   let res: Response;
   try {
-    res = await o.fetchImpl(GRAPHQL_URL, {
+    res = await fetchImpl(GRAPHQL_URL, {
       method: "POST",
       headers: { ...headers(o.token), "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -260,9 +266,9 @@ export async function fetchRateLimit(opts: FetchRateLimitOptions): Promise<RateL
 
 export async function fetchSignals(opts: FetchSignalsOptions): Promise<Signals> {
   const o: Required<FetchSignalsOptions> = {
+    ...opts,
     fetchImpl: opts.fetchImpl ?? (globalThis.fetch as FetchLike),
     timeoutMs: opts.timeoutMs ?? 6000,
-    ...opts,
   };
   if (!o.token) throw new GitHubUpstreamError("no GitHub token configured");
 
