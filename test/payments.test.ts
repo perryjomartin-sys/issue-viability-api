@@ -131,6 +131,35 @@ describe("x402 payment gate", () => {
     expect(res.status).toBe(402);
   });
 
+  it("malformed X-PAYMENT header cannot bypass the gate: no GitHub call, no GO", async () => {
+    const { app, calls } = enabledApp();
+    const res = await post(app, { repo: "cli/cli", issue: 1 }, { "x-payment": "not-base64-json!!!" });
+    expect(res.status).toBe(402);
+    expect(calls()).toBe(0);
+    const body = (await res.json()) as any;
+    expect(body.recommendation).toBeUndefined();
+  });
+
+  it("a well-formed but invalid X-PAYMENT (facilitator verify fails) cannot bypass: no GitHub call, no GO", async () => {
+    const { app, calls } = enabledApp();
+    // Shape a syntactically plausible x402 payment payload; the stub facilitator's
+    // verify() always returns isValid:false, so this must still be rejected.
+    const fakePayment = Buffer.from(
+      JSON.stringify({
+        x402Version: 2,
+        scheme: "exact",
+        network: "eip155:84532",
+        payload: { signature: "0xdeadbeef", authorization: {} },
+      }),
+      "utf8",
+    ).toString("base64");
+    const res = await post(app, { repo: "cli/cli", issue: 1 }, { "x-payment": fakePayment });
+    expect(res.status).not.toBe(200);
+    expect(calls()).toBe(0);
+    const body = (await res.json()) as any;
+    expect(body.recommendation).toBeUndefined();
+  });
+
   it("buildRoutes: Base Sepolia only, $0.005, payTo echoed", () => {
     const cfg = readPaymentConfig({ X402_ENABLED: "true", X402_PAY_TO: PAY_TO, X402_PRICE: "$0.005" });
     const routes = buildRoutes(cfg) as Record<string, any>;
