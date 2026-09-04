@@ -19,6 +19,9 @@
  * is what makes `reserveLiveCall` / `reconcile` / `recover` dispatch over RPC
  * from the Worker (a plain class exposes only `fetch()`). `node:test` runs map
  * that bare specifier to a shim (see `test/shims/`).
+ *
+ * Deployed (see `wrangler.jsonc`); not imported by the Node entrypoint
+ * (`src/server.ts`), which uses `MemoryRateBudget` instead.
  */
 import { DurableObject } from "cloudflare:workers";
 

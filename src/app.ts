@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { Hono, type Context } from "hono";
 
-import { MemoryCache, freshness, toStale, type ViabilityCache } from "./cache.ts";
+import { MemoryCache, freshness, toStale, type CacheEntry, type ViabilityCache } from "./cache.ts";
 import { assess } from "./decision.ts";
 import { ymd } from "./dates.ts";
 import {
@@ -188,7 +188,7 @@ export function createApp(env: AppEnv = {}, deps: AppDeps = {}): Hono {
     const today = now();
     const nowMs = today.getTime();
     const key = `v1:${repo}:${issue}:${ymd(today)}`;
-    const cached = cache.get(key);
+    const cached = await cache.get(key);
 
     if (freshness(cached, nowMs) === "fresh") {
       c.header("x-cache", "fresh");
@@ -284,7 +284,10 @@ export function createApp(env: AppEnv = {}, deps: AppDeps = {}): Hono {
     }
 
     const body = assess(signals, today);
-    cache.set(key, body, nowMs);
+    // `ViabilityCache.set` never throws (implementations swallow their own
+    // write failures), so awaiting it here cannot turn this successful
+    // assessment into an error response.
+    await cache.set(key, body, nowMs);
     // GraphQL success -> authoritative rateLimit. A REST fallback (rateLimit
     // null) means the GraphQL attempt failed at transport *after being sent*,
     // so it may still have been charged: indeterminate, not "not-sent".
@@ -342,7 +345,7 @@ function parseResetAt(iso: string, nowMs: number): number {
 function handleError(
   c: Context,
   err: unknown,
-  cached: ReturnType<ViabilityCache["get"]>,
+  cached: CacheEntry | undefined,
   nowMs: number,
 ) {
   if (err instanceof GitHubNotFoundError) {

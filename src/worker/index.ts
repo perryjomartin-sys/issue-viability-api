@@ -1,15 +1,20 @@
 /**
- * Cloudflare Worker entrypoint — LOCAL ONLY, not deployed.
+ * Cloudflare Worker entrypoint — deployed at
+ * https://issue-viability-api.agentactiongateway.workers.dev.
  *
  * Runs the existing Hono app (`createApp`) with:
  *   - `GITHUB_TOKEN`      (secret)  GitHub read token
  *   - `X402_*`            (vars/secret) x402 V2 settings; Base Sepolia only
  *   - `RATE_BUDGET`       (Durable Object) shared rate-limit-floor coordination
+ *   - `VIABILITY_CACHE`   (Workers KV, optional) shared fresh/stale cache
  *
- * See `wrangler.jsonc`. No account, no login, no deploy has been performed.
+ * See `wrangler.jsonc`. `VIABILITY_CACHE` is optional: when the binding is
+ * absent (e.g. a `wrangler dev` run without it configured), `createApp` falls
+ * back to its default isolate-local `MemoryCache` rather than failing.
  */
 import { createApp } from "../app.ts";
 import { durableObjectRateBudget, type DurableObjectNamespace } from "./rate-budget-do.ts";
+import { KVCache, type KVNamespace } from "./kv-cache.ts";
 
 export { RateBudgetDO } from "./rate-budget-do.ts";
 
@@ -22,6 +27,7 @@ interface Env {
   X402_RESOURCE_URL?: string;
   X402_BAZAAR?: string;
   RATE_BUDGET: DurableObjectNamespace;
+  VIABILITY_CACHE?: KVNamespace;
 }
 
 /** Minimal Cloudflare `ExecutionContext` shape (avoids `@cloudflare/workers-types`). */
@@ -46,7 +52,10 @@ export default {
           X402_RESOURCE_URL: env.X402_RESOURCE_URL,
           X402_BAZAAR: env.X402_BAZAAR,
         },
-        { rateBudget: durableObjectRateBudget(env.RATE_BUDGET) },
+        {
+          rateBudget: durableObjectRateBudget(env.RATE_BUDGET),
+          cache: env.VIABILITY_CACHE ? new KVCache(env.VIABILITY_CACHE) : undefined,
+        },
       );
     }
     // `ctx` (waitUntil / passThroughOnException) is unused by our handlers.

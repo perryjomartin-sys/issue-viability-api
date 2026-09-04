@@ -1,7 +1,6 @@
 {
-  // Cloudflare Worker config — LOCAL ONLY. Not deployed. No account configured.
-  // Wrangler is not installed; `wrangler deploy --dry-run` (bundle-size check)
-  // is still outstanding — see HANDOFF "STEP-G — REMAINING FOR TESTNET".
+  // Cloudflare Worker config. Deployed to
+  // https://issue-viability-api.agentactiongateway.workers.dev.
   "name": "issue-viability-api",
   "main": "src/worker/index.ts",
   "compatibility_date": "2026-08-04",
@@ -14,6 +13,13 @@
     "bindings": [{ "name": "RATE_BUDGET", "class_name": "RateBudgetDO" }]
   },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["RateBudgetDO"] }],
+
+  // Fleet-wide fresh/stale production cache, replacing the isolate-local MemoryCache.
+  // Entries expire after the stale-cache window. Workers KV is eventually consistent;
+  // cache misses safely fall through to GitHub.
+  "kv_namespaces": [
+    { "binding": "VIABILITY_CACHE", "id": "c40855d65e2b4a5c84620d791da34a9e" }
+  ],
 
   // Non-secret config. Base Sepolia (eip155:84532) is the ONLY network the code
   // will price on — enforced in src/payments.ts, not here.

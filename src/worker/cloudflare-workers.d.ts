@@ -1,7 +1,7 @@
 /**
  * Minimal ambient surface of the Cloudflare Workers runtime that `src/worker/`
  * actually touches — deliberately NOT `@cloudflare/workers-types` (see the note
- * in `rate-budget-do.ts`). LOCAL ONLY; the Worker is not deployed.
+ * in `rate-budget-do.ts`).
  *
  * Picked up by `tsc` via the `"src"` entry in `tsconfig.json`'s `include`.
  */
