@@ -24,7 +24,7 @@
   // Non-secret config. Base Sepolia (eip155:84532) is the ONLY network the code
   // will price on — enforced in src/payments.ts, not here.
   "vars": {
-    "X402_ENABLED": "false",
+    "X402_ENABLED": "true",
     "X402_PRICE": "$0.005",
     "X402_BAZAAR": "true"
   }
