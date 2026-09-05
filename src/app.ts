@@ -13,7 +13,13 @@ import {
   type RateLimitSnapshot,
 } from "./github.ts";
 import { parseGraphQL } from "./parse.ts";
-import { installPaymentGate, paymentGateActive, readPaymentConfig } from "./payments.ts";
+import {
+  installPaymentGate,
+  logX402,
+  paymentGateActive,
+  readPaymentConfig,
+  requestCorrelationId,
+} from "./payments.ts";
 import {
   FALLBACK_RETRY_MS,
   MemoryRateBudget,
@@ -110,6 +116,9 @@ export function createApp(env: AppEnv = {}, deps: AppDeps = {}): Hono {
   // route handlers so it runs first. Throws if enabled without a valid payTo.
   const paymentCfg = readPaymentConfig(env as Record<string, string | undefined>);
   installPaymentGate(app, paymentCfg, deps.facilitatorClient);
+  // Only log the protected-handler lifecycle (below) when x402 is actually
+  // gating the route — observability scoped to the thing being observed.
+  const x402Active = paymentGateActive(paymentCfg);
 
   // CONFIG.RATE_LIMIT_FLOOR enforcement, behind the shared RateBudget abstraction
   // (atomic reserve -> fetch -> reconcile; see src/rate-budget.ts). The default
@@ -185,6 +194,13 @@ export function createApp(env: AppEnv = {}, deps: AppDeps = {}): Hono {
     const { repo, issue, error } = validate(payload);
     if (error) return c.json({ error: "invalid_request", detail: error }, 400);
 
+    const correlationId = x402Active ? requestCorrelationId((name) => c.req.header(name)) : "";
+    if (x402Active) {
+      // Only reachable once the x402 gate has called `next()` (payment
+      // verified or gate inactive) — see src/payments.ts.
+      logX402("protected_handler_entered", { correlationId, repo, issue });
+    }
+
     const today = now();
     const nowMs = today.getTime();
     const key = `v1:${repo}:${issue}:${ymd(today)}`;
@@ -202,6 +218,12 @@ export function createApp(env: AppEnv = {}, deps: AppDeps = {}): Hono {
       reservation = await rateBudget.reserveLiveCall(nowMs);
     } catch {
       reservation = { ok: false, retryAfterMs: FALLBACK_RETRY_MS };
+    }
+    if (x402Active) {
+      logX402("rate_budget_reservation", {
+        correlationId,
+        outcome: reservation.ok ? "admitted" : "recover" in reservation ? "recovery_elected" : "blocked",
+      });
     }
 
     // Budget unknown and we were elected to recover it: run the authoritative,
@@ -273,6 +295,7 @@ export function createApp(env: AppEnv = {}, deps: AppDeps = {}): Hono {
     }
 
     const reservationId = reservation.reservationId;
+    if (x402Active) logX402("github_assessment_started", { correlationId, repo, issue });
     let signals: Signals;
     try {
       signals = await getSignals(repo!, issue!);
@@ -284,6 +307,7 @@ export function createApp(env: AppEnv = {}, deps: AppDeps = {}): Hono {
     }
 
     const body = assess(signals, today);
+    if (x402Active) logX402("assessment_completed", { correlationId, recommendation: body.recommendation });
     // `ViabilityCache.set` never throws (implementations swallow their own
     // write failures), so awaiting it here cannot turn this successful
     // assessment into an error response.

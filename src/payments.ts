@@ -22,7 +22,7 @@ import { HTTPFacilitatorClient } from "@x402/core/server";
 import type { FacilitatorClient, RoutesConfig } from "@x402/core/server";
 import { ExactEvmScheme } from "@x402/evm/exact/server";
 import { declareDiscoveryExtension } from "@x402/extensions/bazaar";
-import type { Hono } from "hono";
+import type { Context, Hono } from "hono";
 
 /** The ONLY network this build will price on (CAIP-2 for Base Sepolia). */
 export const BASE_SEPOLIA = "eip155:84532" as const;
@@ -36,6 +36,58 @@ const DEFAULT_PRICE = "$0.005";
 const EVM_ADDRESS = /^0x[0-9a-fA-F]{40}$/;
 
 const truthy = (v: string | undefined): boolean => v === "true" || v === "1" || v === "yes";
+
+/**
+ * Structured, secrets-free logging for the x402 payment lifecycle. Plain
+ * `console.log` is deliberate: Cloudflare Workers ships every `console.*` call
+ * to the dashboard log stream / `wrangler tail` / Logpush with no extra
+ * wiring, so this needs no new dependency and sends nothing to a new third
+ * party. NEVER pass a header value, signature, or authorization payload here —
+ * only short enum/boolean/id fields.
+ */
+export function logX402(event: string, fields: Record<string, string | number | boolean | undefined> = {}): void {
+  console.log(JSON.stringify({ scope: "x402", event, ...fields }));
+}
+
+/**
+ * Correlation id for tying one request's log lines together: Cloudflare's own
+ * per-request edge id (`cf-ray`), already present on every response this
+ * Worker sends (see production `curl` smoke tests) and safe to log verbatim —
+ * it identifies a request, not a person or a secret. Falls back to "local"
+ * outside Cloudflare (dev / tests), where cross-log correlation isn't needed.
+ */
+export function requestCorrelationId(getHeader: (name: string) => string | undefined): string {
+  return getHeader("cf-ray") ?? "local";
+}
+
+/** Same correlation id, recovered from an `@x402/core` hook's `transportContext`
+ *  (typed `unknown` by the SDK). Defensive optional-chaining only — never throws. */
+function correlationIdFromTransport(transportContext: unknown): string {
+  const request = (
+    transportContext as { request?: { adapter?: { getHeader?: (name: string) => string | undefined } } } | undefined
+  )?.request;
+  return requestCorrelationId((name) => request?.adapter?.getHeader?.(name));
+}
+
+/**
+ * Classify the raw `payment-signature` header for logging ONLY — mirrors the
+ * SDK's own base64-then-JSON decode (`@x402/core`'s `safeBase64Decode`) but
+ * discards the decoded value immediately; the header's actual content is
+ * never logged, only whether it was absent, present-but-unparseable
+ * ("malformed"), or parseable JSON.
+ */
+function classifyPaymentHeader(raw: string | undefined): "absent" | "malformed" | "parseable" {
+  if (!raw) return "absent";
+  try {
+    const binary = globalThis.atob(raw);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    JSON.parse(new TextDecoder().decode(bytes));
+    return "parseable";
+  } catch {
+    return "malformed";
+  }
+}
 
 export interface PaymentConfig {
   enabled: boolean;
@@ -130,6 +182,53 @@ export function buildRoutes(cfg: PaymentConfig): RoutesConfig {
 }
 
 /**
+ * Register x402 lifecycle observability on `resourceServer` via its public
+ * hook API (`onBeforeVerify` / `onAfterVerify` / `onVerifyFailure` /
+ * `onBeforeSettle` / `onAfterSettle` / `onSettleFailure`). These are the
+ * SDK's own designed-for-this extension points: every hook here only logs and
+ * returns nothing, so none of them can change verification/settlement outcome
+ * (an `abort` / `skip` / `recovered` directive would; these never return one).
+ */
+function installPaymentObservability(resourceServer: x402ResourceServer): void {
+  resourceServer
+    .onBeforeVerify(async (ctx) => {
+      logX402("facilitator_verification_attempted", {
+        correlationId: correlationIdFromTransport(ctx.transportContext),
+        network: ctx.requirements.network,
+        scheme: ctx.requirements.scheme,
+      });
+    })
+    .onAfterVerify(async (ctx) => {
+      logX402(ctx.result.isValid ? "payment_verified" : "payment_rejected", {
+        correlationId: correlationIdFromTransport(ctx.transportContext),
+        reason: ctx.result.isValid ? undefined : String(ctx.result.invalidReason ?? "unspecified"),
+      });
+    })
+    .onVerifyFailure(async (ctx) => {
+      logX402("verification_errored", {
+        correlationId: correlationIdFromTransport(ctx.transportContext),
+        error: ctx.error.message,
+      });
+    })
+    .onBeforeSettle(async (ctx) => {
+      logX402("facilitator_settlement_attempted", {
+        correlationId: correlationIdFromTransport(ctx.transportContext),
+      });
+    })
+    .onAfterSettle(async (ctx) => {
+      logX402("settlement_succeeded", {
+        correlationId: correlationIdFromTransport(ctx.transportContext),
+      });
+    })
+    .onSettleFailure(async (ctx) => {
+      logX402("settlement_failed", {
+        correlationId: correlationIdFromTransport(ctx.transportContext),
+        error: ctx.error.message,
+      });
+    });
+}
+
+/**
  * Install the payment gate on `app`. No-op when disabled. Call before the route
  * handlers so the middleware runs first.
  *
@@ -155,6 +254,23 @@ export function installPaymentGate(
     BASE_SEPOLIA,
     new ExactEvmScheme(),
   );
+  installPaymentObservability(resourceServer);
+
+  // Observability-only wrapper around the gated route: logs request receipt,
+  // a pre-classification of the payment header (never its content — see
+  // `classifyPaymentHeader`), and the final response status. Always calls
+  // `next()` unconditionally and never inspects/mutates the response body, so
+  // it cannot change what the gate or handler decide.
+  app.use("/v1/check", async (c: Context, next) => {
+    const correlationId = requestCorrelationId((name) => c.req.header(name));
+    const paymentHeader = classifyPaymentHeader(c.req.header("payment-signature"));
+    logX402("request_received", { correlationId, method: c.req.method, paymentHeader });
+    if (paymentHeader === "malformed") {
+      logX402("malformed_payment", { correlationId });
+    }
+    await next();
+    logX402("request_completed", { correlationId, status: c.res.status });
+  });
 
   // No paywallConfig / custom paywall provider — agent-first, no browser wallet UI.
   app.use(paymentMiddleware(buildRoutes(cfg), resourceServer));
