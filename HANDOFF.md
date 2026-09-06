@@ -1,5 +1,33 @@
 # Issue Viability API — Phase 1 handoff (steps A–G)
 
+## CURRENT STATE — automation handoff (2026-09-06)
+
+The existing Cloudflare Worker is deployed and x402 is live. Network is
+**Base Sepolia `eip155:84532` only**, price **`$0.005`**, x402 and Bazaar enabled.
+`RATE_BUDGET` and `VIABILITY_CACHE` are deployed. Payment hardening and
+observability are complete and deployed; accounting/idempotency audit is
+complete. `8646367` added tests only; `eb11a63` ignores `.claude/`.
+The repository has been pushed/backed up to GitHub. At automation task start,
+local `master` and cached `origin/master` matched
+`eb11a636dc758a943ec1515a9828c1e971c16335`; live remote verification was blocked
+by unavailable GitHub authentication in this session.
+
+Automation uses Node `22.23.2` and locked Wrangler `4.124.0`. The originally
+supplied gateway executable was absent; its package-lock recorded `4.124.0`,
+which was installed here without upgrading. Use [AUTOMATION.md](AUTOMATION.md)
+for workflow triggers, setup, approval boundaries, and local validation.
+
+Funded Base Sepolia settlement remains **UNVERIFIED**. Mainnet remains
+**DISABLED**. No deployment, wallet access, funded transaction, or push is
+included in this automation task. `.claude/` remains local and ignored.
+
+## HISTORICAL DEVELOPMENT NOTES — preserved, superseded by CURRENT STATE
+
+Everything below records earlier development stages. Statements such as
+“nothing deployed”, “Wrangler unavailable”, “DO not deployed”, “local only”,
+“uncommitted”, and old test counts describe those stages, not current status.
+
+
 ## BUILD STATUS
 
 Steps A–E complete and green, independently re-verified. Two pre-Step-F fixes

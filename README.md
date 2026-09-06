@@ -29,29 +29,27 @@ POST /v1/check
 / `high` and maps 1:1 to it. The response is **deterministic**: a pure function
 of `(repo, issue, GitHub state, UTC date)`.
 
-## Status
+## CURRENT STATE
 
-Phase-1 build, steps **A–G** of the agreed plan. Steps done:
+The API is live at https://issue-viability-api.agentactiongateway.workers.dev.
+x402 is enabled on `POST /v1/check`, with Bazaar enabled, on **Base Sepolia
+only (`eip155:84532`) at `$0.005`**. `RATE_BUDGET` (SQLite Durable Object)
+and `VIABILITY_CACHE` (Workers KV) are deployed. Payment boundary hardening
+and payment observability are deployed; the paid-request accounting/idempotency
+audit is complete. Commit `8646367` added accounting tests only; `eb11a63`
+ignored the local `.claude/` workspace. The repository is backed up to GitHub.
 
-| Step | What | State |
-|---|---|---|
-| A | Deterministic GitHub client (`src/github.ts`, `src/parse.ts`, `src/query.ts`) | done |
-| B | Decision engine (`src/decision.ts`) | done |
-| C | Unit tests (`test/*.test.ts`, `node:test`) | 113 passing |
-| D | Real-world evaluation (`test/evaluation.test.ts`, 23 recorded GitHub fixtures) | false-GO = 0 |
-| E | Local endpoint (`src/app.ts` + `src/server.ts`, Hono) | runs |
-| F | Independent GPT-5.6 diff review | **done — findings F1–F5 remediated (see HANDOFF.md)** |
-| G | Base-Sepolia x402 V2 payment gate + shared rate budget + Worker scaffold | **local implementation done; not deployed** |
+**Funded Base Sepolia settlement remains UNVERIFIED. Mainnet is DISABLED.**
+No funded transaction is part of CI, deployment, or monitoring. Historical
+phase-1 development notes are retained in [HANDOFF.md](HANDOFF.md).
 
-The x402 V2 packages (`@x402/hono`, `@x402/core`, `@x402/evm`, `@x402/extensions`,
-pinned to `2.24.0`) are installed and the payment gate is implemented and tested
-locally. Nothing is deployed; no Cloudflare account, no wallet, no funds. The
-optional `@x402/paywall` browser wallet UI is intentionally not installed.
+See [automation and release procedures](AUTOMATION.md) for CI, manual production
+approval, environment setup, deployment reports, and unpaid monitoring.
 
 ## Run it locally
 
 ```bash
-npm install
+npm ci
 
 # 1. offline, using the recorded real-GitHub fixtures (no token needed)
 IVA_DEV_FIXTURES="$PWD/test/fixtures/raw" IVA_NOW=2026-08-30T12:00:00Z npm run dev
@@ -212,16 +210,11 @@ serialization boundary, so the one credential is coordinated fleet-wide. A
 leaves the reservation held to the window reset (temporary over-block, never a
 bypass).
 
-## Cloudflare Worker (not deployed)
+## Cloudflare Worker
 
-`src/worker/index.ts` runs the same Hono app with the DO-backed rate budget;
-`wrangler.jsonc` has the binding, the `new_sqlite_classes` migration (allowed on
-Workers **Free**), and `compatibility_date 2026-08-04`. `wrangler` is **not
-installed** and nothing is deployed — the `wrangler deploy --dry-run`
-bundle-size check is still outstanding.
-
-## Deployment (not done)
-
-Target: one Cloudflare Worker, Hono, Workers KV for the cache, native Rate
-Limiting binding, the x402 V2 middleware above on `POST /v1/check`,
-`base-sepolia` first. Not deployed — see `HANDOFF.md`.
+`src/worker/index.ts` runs the Hono app with the deployed DO-backed rate budget
+and KV cache. `wrangler.jsonc` retains compatibility date `2026-08-04` and the
+existing SQLite migration. Node is pinned in `.node-version`; Wrangler is
+pinned in `package.json` and the lockfile. Run `npm run dry-run` to bundle
+without uploading. Production deployment uses the manual workflow described
+in [AUTOMATION.md](AUTOMATION.md).

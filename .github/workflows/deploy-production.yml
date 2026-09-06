@@ -1,0 +1,85 @@
+name: Deploy production (Base Sepolia)
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_sha:
+        description: 'Paste the full master commit SHA you approve for testnet deployment'
+        required: true
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: production-deployment
+  cancel-in-progress: false
+jobs:
+  validate:
+    if: github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      count: ${{ steps.tests.outputs.count }}
+    steps:
+      - name: Confirm immutable selected commit
+        env:
+          CONFIRM_SHA: ${{ inputs.confirm_sha }}
+        run: test "$CONFIRM_SHA" = "$GITHUB_SHA"
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - id: tests
+        run: node scripts/test-report.mjs
+      - run: node scripts/verify-config.mjs
+      - run: git show --format= --check HEAD
+      - run: node scripts/wrangler-run.mjs dry-run
+  deploy:
+    needs: validate
+    environment: production
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: npm
+      - run: npm ci
+      - run: node scripts/verify-config.mjs
+      - id: deploy
+        name: Deploy approved commit
+        env:
+          PRODUCTION_APPROVED: 'true'
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: node scripts/wrangler-run.mjs deploy
+      - id: smoke
+        run: node scripts/smoke-production.mjs
+      - name: Deployment report
+        if: always()
+        env:
+          VERSION: ${{ steps.deploy.outputs.version }}
+          DEPLOYED_AT: ${{ steps.deploy.outputs.timestamp }}
+          TEST_COUNT: ${{ needs.validate.outputs.count }}
+          DEPLOY_RESULT: ${{ steps.deploy.outcome }}
+          SMOKE_RESULT: ${{ steps.smoke.outcome }}
+        run: |
+          {
+            echo '## Production deployment (Base Sepolia)'
+            echo "Commit: $GITHUB_SHA"
+            echo "Worker Version ID: ${VERSION:-unavailable}"
+            echo "Tests: $TEST_COUNT passed"
+            echo 'Typecheck: PASS; configuration: PASS; dry-run: PASS'
+            echo "Deployment: $DEPLOY_RESULT; smoke: $SMOKE_RESULT"
+            echo 'Network: eip155:84532; configured price: $0.005'
+            echo "Deployment timestamp (UTC): ${DEPLOYED_AT:-unavailable}"
+            echo 'Funded settlement: UNVERIFIED; mainnet: DISABLED'
+          } >> "$GITHUB_STEP_SUMMARY"
