@@ -17,8 +17,11 @@ supplied gateway executable was absent; its package-lock recorded `4.124.0`,
 which was installed here without upgrading. Use [AUTOMATION.md](AUTOMATION.md)
 for workflow triggers, setup, approval boundaries, and local validation.
 
-Funded Base Sepolia settlement remains **UNVERIFIED**. Mainnet remains
-**DISABLED**. No deployment, wallet access, funded transaction, or push is
+**BASE SEPOLIA FUNDED END-TO-END PROOF: PASS.** Mainnet remains **NOT ENABLED**.
+The mainnet architecture is isolated and fail-closed pending CDP credentials,
+an independently controlled `X402_PAY_TO`, isolated KV/DO resources, GitHub
+environment approval, manual deployment, and exactly one `$0.005` real-USDC
+test. No deployment, wallet access, funded transaction, or push is
 included in this automation task. `.claude/` remains local and ignored.
 
 ## HISTORICAL DEVELOPMENT NOTES — preserved, superseded by CURRENT STATE

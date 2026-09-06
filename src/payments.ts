@@ -1,9 +1,9 @@
 /**
- * x402 V2 payment gate for `POST /v1/check` — Base Sepolia testnet ONLY.
+ * x402 V2 payment gate for `POST /v1/check`.
  *
- * This build hard-codes the network to `eip155:84532` (Base Sepolia) and will
- * not price on anything else: no mainnet, no real USDC. The gate is OFF unless
- * `X402_ENABLED` is set.
+ * Base Sepolia is the default. Base mainnet is an explicitly approved, separate
+ * deployment configuration only; no other network, asset, facilitator, or
+ * price combination is accepted.
  *
  * The middleware fetches the facilitator's supported payment kinds on first use
  * (`syncFacilitatorOnStart` default), so a live unpaid request needs one call to
@@ -22,16 +22,24 @@ import { HTTPFacilitatorClient } from "@x402/core/server";
 import type { FacilitatorClient, RoutesConfig } from "@x402/core/server";
 import { ExactEvmScheme } from "@x402/evm/exact/server";
 import { declareDiscoveryExtension } from "@x402/extensions/bazaar";
+import { createFacilitatorConfig } from "@coinbase/x402";
 import type { Context, Hono } from "hono";
 
 /** The ONLY network this build will price on (CAIP-2 for Base Sepolia). */
 export const BASE_SEPOLIA = "eip155:84532" as const;
+export const BASE_MAINNET = "eip155:8453" as const;
+export const BASE_SEPOLIA_USDC = "0x036CbD53842c5426634e7929541eC2318f3dCF7e" as const;
+export const BASE_MAINNET_USDC = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913" as const;
+export const X402_ORG_FACILITATOR = "https://x402.org/facilitator" as const;
+export const CDP_FACILITATOR = "https://api.cdp.coinbase.com/platform/v2/x402" as const;
+export const X402_PRICE = "$0.005" as const;
 
-/** Public testnet facilitator — keyless verify/settle for base-sepolia. */
-const DEFAULT_FACILITATOR_URL = "https://x402.org/facilitator";
+export type SupportedNetwork = typeof BASE_SEPOLIA | typeof BASE_MAINNET;
 
-/** Default price per call (G3). */
-const DEFAULT_PRICE = "$0.005";
+export const NETWORK_CONFIG: Record<SupportedNetwork, { asset: string; facilitatorUrl: string; mainnet: boolean }> = {
+  [BASE_SEPOLIA]: { asset: BASE_SEPOLIA_USDC, facilitatorUrl: X402_ORG_FACILITATOR, mainnet: false },
+  [BASE_MAINNET]: { asset: BASE_MAINNET_USDC, facilitatorUrl: CDP_FACILITATOR, mainnet: true },
+};
 
 const EVM_ADDRESS = /^0x[0-9a-fA-F]{40}$/;
 
@@ -91,10 +99,17 @@ function classifyPaymentHeader(raw: string | undefined): "absent" | "malformed" 
 
 export interface PaymentConfig {
   enabled: boolean;
-  /** EVM address that receives Base Sepolia testnet USDC. Required when enabled. */
+  network: SupportedNetwork;
+  /** Native USDC contract for the selected Base network. */
+  asset: string;
+  /** EVM address that receives USDC. Required when enabled. */
   payTo: string;
   facilitatorUrl: string;
   price: string;
+  mainnetApproved: boolean;
+  /** Runtime-only CDP secrets. Never expose or log these. */
+  cdpApiKeyId?: string;
+  cdpApiKeySecret?: string;
   /** Public URL of this resource, for discovery metadata. */
   resourceUrl?: string;
   /** Emit the x402 Bazaar discovery extension on the route (default on). */
@@ -102,14 +117,39 @@ export interface PaymentConfig {
 }
 
 export function readPaymentConfig(env: Record<string, string | undefined>): PaymentConfig {
-  return {
+  const selectedNetwork = (env.X402_NETWORK ?? BASE_SEPOLIA).trim();
+  if (selectedNetwork !== BASE_SEPOLIA && selectedNetwork !== BASE_MAINNET) {
+    throw new Error("x402 network is not an approved Base network");
+  }
+  const network = selectedNetwork as SupportedNetwork;
+  const expected = NETWORK_CONFIG[network];
+  const cfg: PaymentConfig = {
     enabled: truthy(env.X402_ENABLED),
+    network,
+    asset: (env.X402_ASSET ?? expected.asset).trim(),
     payTo: (env.X402_PAY_TO ?? "").trim(),
-    facilitatorUrl: (env.X402_FACILITATOR_URL ?? DEFAULT_FACILITATOR_URL).trim(),
-    price: (env.X402_PRICE ?? DEFAULT_PRICE).trim(),
+    facilitatorUrl: (env.X402_FACILITATOR_URL ?? expected.facilitatorUrl).trim(),
+    price: (env.X402_PRICE ?? X402_PRICE).trim(),
+    mainnetApproved: env.X402_MAINNET_APPROVED === "true",
+    cdpApiKeyId: env.CDP_API_KEY_ID,
+    cdpApiKeySecret: env.CDP_API_KEY_SECRET,
     resourceUrl: env.X402_RESOURCE_URL?.trim() || undefined,
     bazaar: env.X402_BAZAAR === undefined ? true : truthy(env.X402_BAZAAR),
   };
+  validatePaymentConfig(cfg);
+  return cfg;
+}
+
+/** Fail closed before any request can use an incoherent payment configuration. */
+export function validatePaymentConfig(cfg: PaymentConfig): void {
+  const expected = NETWORK_CONFIG[cfg.network];
+  if (!expected || cfg.asset !== expected.asset || cfg.facilitatorUrl !== expected.facilitatorUrl || cfg.price !== X402_PRICE) {
+    throw new Error("x402 configuration does not match an approved network profile");
+  }
+  if (expected.mainnet) {
+    if (!cfg.mainnetApproved) throw new Error("Base mainnet requires explicit runtime approval");
+    if (!cfg.cdpApiKeyId || !cfg.cdpApiKeySecret) throw new Error("Base mainnet CDP facilitator credentials are required");
+  }
 }
 
 /** True once the config is enabled and internally consistent. */
@@ -154,9 +194,11 @@ export function buildRoutes(cfg: PaymentConfig): RoutesConfig {
     "POST /v1/check": {
       accepts: {
         scheme: "exact",
-        price: cfg.price,
-        network: BASE_SEPOLIA,
+        network: cfg.network,
         payTo: cfg.payTo,
+        // Pin the native USDC contract instead of relying solely on the SDK's
+        // default-asset table. This makes asset drift a startup failure.
+        price: { amount: "5000", asset: cfg.asset },
         maxTimeoutSeconds: 60,
       },
       description:
@@ -172,9 +214,9 @@ export function buildRoutes(cfg: PaymentConfig): RoutesConfig {
         contentType: "application/json",
         body: {
           error: "payment_required",
-          detail: "POST /v1/check requires an x402 payment (Base Sepolia testnet USDC).",
+          detail: "POST /v1/check requires an x402 payment.",
           price: cfg.price,
-          network: BASE_SEPOLIA,
+          network: cfg.network,
         },
       }),
     },
@@ -248,10 +290,11 @@ export function installPaymentGate(
     );
   }
 
-  const facilitator =
-    facilitatorClient ?? new HTTPFacilitatorClient({ url: cfg.facilitatorUrl });
+  const facilitator = facilitatorClient ?? (cfg.network === BASE_MAINNET
+    ? new HTTPFacilitatorClient(createFacilitatorConfig(cfg.cdpApiKeyId, cfg.cdpApiKeySecret))
+    : new HTTPFacilitatorClient({ url: cfg.facilitatorUrl }));
   const resourceServer = new x402ResourceServer(facilitator).register(
-    BASE_SEPOLIA,
+    cfg.network,
     new ExactEvmScheme(),
   );
   installPaymentObservability(resourceServer);

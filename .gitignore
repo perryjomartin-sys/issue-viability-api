@@ -4,3 +4,7 @@ dist/
 .dev.vars
 .wrangler/
 *.log
+
+# Local x402 test wallet secrets
+.env.x402-sepolia
+.x402-sepolia-wallet.json

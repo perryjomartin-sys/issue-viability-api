@@ -21,17 +21,47 @@
     { "binding": "VIABILITY_CACHE", "id": "c40855d65e2b4a5c84620d791da34a9e" }
   ],
 
-  // Non-secret config. Base Sepolia (eip155:84532) is the ONLY network the code
-  // will price on — enforced in src/payments.ts, not here.
+  // Non-secret Base Sepolia configuration. This is the default Worker and the
+  // only target used by the ordinary deployment workflow.
   "vars": {
     "X402_ENABLED": "true",
+    "X402_NETWORK": "eip155:84532",
+    "X402_ASSET": "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
     "X402_PRICE": "$0.005",
     "X402_BAZAAR": "true"
+  },
+
+  // Separate Worker identity and state namespace for Base mainnet. The all-zero
+  // KV id is an intentional fail-closed placeholder: replace it only after an
+  // isolated mainnet namespace has been created and recorded in a reviewed PR.
+  // It is not the Sepolia namespace and cannot resolve to a usable KV resource.
+  "env": {
+    "mainnet": {
+      "name": "issue-viability-api-mainnet",
+      "durable_objects": {
+        "bindings": [{ "name": "RATE_BUDGET", "class_name": "RateBudgetDO" }]
+      },
+      "kv_namespaces": [
+        { "binding": "VIABILITY_CACHE", "id": "00000000000000000000000000000000" }
+      ],
+      "vars": {
+        "X402_ENABLED": "true",
+        "X402_NETWORK": "eip155:8453",
+        "X402_ASSET": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+        "X402_FACILITATOR_URL": "https://api.cdp.coinbase.com/platform/v2/x402",
+        "X402_MAINNET_APPROVED": "true",
+        "X402_PRICE": "$0.005",
+        "X402_BAZAAR": "true"
+      }
+    }
   }
 
   // Secrets, set with `wrangler secret put <NAME>` (NOT done):
   //   GITHUB_TOKEN     GitHub read token
-  //   X402_PAY_TO      Base Sepolia address that receives testnet USDC
+  //   X402_PAY_TO      Address that receives USDC; set separately per Worker
   //   X402_RESOURCE_URL  public URL of POST /v1/check (for discovery)
-  //   X402_FACILITATOR_URL  optional; defaults to https://x402.org/facilitator
+  //   X402_FACILITATOR_URL  optional Sepolia override; default x402.org testnet
+  // Mainnet-only runtime secrets (never commit values):
+  //   CDP_API_KEY_ID
+  //   CDP_API_KEY_SECRET
 }

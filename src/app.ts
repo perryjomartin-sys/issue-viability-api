@@ -44,9 +44,13 @@ export interface AppEnv {
   IVA_DEV_FIXTURES?: string;
   /** Injectable clock for tests: ISO string. */
   IVA_NOW?: string;
-  /** x402 V2 payment gate on POST /v1/check (Base Sepolia testnet only). OFF unless "true"/"1". */
+  /** x402 V2 payment gate on POST /v1/check. Defaults to Base Sepolia. */
   X402_ENABLED?: string;
-  /** EVM address that receives Base Sepolia testnet USDC. Required when X402_ENABLED. */
+  /** Explicit CAIP-2 network; only Base Sepolia and explicitly approved Base mainnet are valid. */
+  X402_NETWORK?: string;
+  /** Pinned native USDC contract for the selected network. */
+  X402_ASSET?: string;
+  /** EVM address that receives USDC. Required when X402_ENABLED. */
   X402_PAY_TO?: string;
   /** Facilitator base URL. Defaults to the public testnet facilitator. */
   X402_FACILITATOR_URL?: string;
@@ -56,6 +60,11 @@ export interface AppEnv {
   X402_RESOURCE_URL?: string;
   /** Emit the x402 Bazaar discovery extension (default on when enabled). */
   X402_BAZAAR?: string;
+  /** Required exactly as "true" when X402_NETWORK is Base mainnet. */
+  X402_MAINNET_APPROVED?: string;
+  /** CDP facilitator runtime secrets, required for Base mainnet only. */
+  CDP_API_KEY_ID?: string;
+  CDP_API_KEY_SECRET?: string;
 }
 
 export interface AppDeps {

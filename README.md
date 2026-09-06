@@ -39,7 +39,7 @@ and payment observability are deployed; the paid-request accounting/idempotency
 audit is complete. Commit `8646367` added accounting tests only; `eb11a63`
 ignored the local `.claude/` workspace. The repository is backed up to GitHub.
 
-**Funded Base Sepolia settlement remains UNVERIFIED. Mainnet is DISABLED.**
+**BASE SEPOLIA FUNDED END-TO-END PROOF: PASS. MAINNET: NOT ENABLED.**
 No funded transaction is part of CI, deployment, or monitoring. Historical
 phase-1 development notes are retained in [HANDOFF.md](HANDOFF.md).
 
@@ -139,9 +139,15 @@ contract.
 ## x402 V2 payment gate (step G)
 
 `POST /v1/check` can be gated behind an [x402](https://x402.org) V2 payment on
-**Base Sepolia testnet** (`eip155:84532`). OFF unless `X402_ENABLED` is set.
-No mainnet, no real USDC — the network is hard-coded and the code refuses any
-other.
+**Base Sepolia testnet** (`eip155:84532`, native USDC
+`0x036CbD53842c5426634e7929541eC2318f3dCF7e`) by default. It uses the keyless
+testnet-only `https://x402.org/facilitator` and costs exactly `$0.005`.
+
+Base mainnet is prepared but **NOT ENABLED**. It is a separate Worker identity,
+requires exact `eip155:8453`, native USDC
+`0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913`, the authenticated CDP facilitator,
+`X402_MAINNET_APPROVED=true`, and isolated runtime secrets. Every other
+network/asset/facilitator/price combination fails at startup.
 
 ```bash
 X402_ENABLED=true \
@@ -160,6 +166,14 @@ npm run dev
 | `X402_FACILITATOR_URL` | x402 facilitator | `https://x402.org/facilitator` |
 | `X402_RESOURCE_URL` | public URL, for discovery metadata | — |
 | `X402_BAZAAR` | emit the x402 Bazaar discovery extension | on |
+
+Mainnet manual prerequisites: create CDP credentials; set `CDP_API_KEY_ID`,
+`CDP_API_KEY_SECRET`, and a separately selected `X402_PAY_TO` as isolated
+mainnet runtime secrets; create isolated mainnet KV/DO resources; configure
+human approval for the `issue-viability-mainnet` GitHub Environment; then
+manually deploy and perform exactly one `$0.005` real-USDC test. The committed
+mainnet KV id is an intentional fail-closed placeholder, so it cannot be used
+until that resource setup is completed in a reviewed change.
 
 Unpaid API requests get **402** with a `Payment-Required` header (x402 V2) and a
 JSON body; a browser hit gets the middleware's built-in plain-HTML instructions

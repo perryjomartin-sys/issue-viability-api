@@ -160,12 +160,12 @@ describe("x402 payment gate", () => {
     expect(body.recommendation).toBeUndefined();
   });
 
-  it("buildRoutes: Base Sepolia only, $0.005, payTo echoed", () => {
+  it("buildRoutes: Base Sepolia only, pinned $0.005 USDC, payTo echoed", () => {
     const cfg = readPaymentConfig({ X402_ENABLED: "true", X402_PAY_TO: PAY_TO, X402_PRICE: "$0.005" });
     const routes = buildRoutes(cfg) as Record<string, any>;
     const accepts = routes["POST /v1/check"].accepts;
     expect(accepts.network).toBe("eip155:84532");
-    expect(accepts.price).toBe("$0.005");
+    expect(accepts.price).toEqual({ amount: "5000", asset: "0x036CbD53842c5426634e7929541eC2318f3dCF7e" });
     expect(accepts.payTo).toBe(PAY_TO);
     expect(accepts.scheme).toBe("exact");
   });

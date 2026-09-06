@@ -1,0 +1,68 @@
+name: Deploy Base mainnet (manual only)
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_sha:
+        description: 'Paste the exact 40-character master commit SHA to deploy'
+        required: true
+        type: string
+      approval_phrase:
+        description: 'Type ENABLE_BASE_MAINNET_8453 to confirm a real-USDC deployment'
+        required: true
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: issue-viability-mainnet-deployment
+  cancel-in-progress: false
+jobs:
+  validate:
+    if: github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Confirm immutable commit and explicit mainnet phrase
+        env:
+          CONFIRM_SHA: ${{ inputs.confirm_sha }}
+          APPROVAL_PHRASE: ${{ inputs.approval_phrase }}
+        run: |
+          test "${#CONFIRM_SHA}" = 40
+          test "$CONFIRM_SHA" = "$GITHUB_SHA"
+          test "$APPROVAL_PHRASE" = 'ENABLE_BASE_MAINNET_8453'
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: node scripts/test-report.mjs
+      - run: node scripts/verify-config.mjs mainnet
+      - run: git show --format= --check HEAD
+      - run: node scripts/wrangler-run.mjs dry-run mainnet
+  deploy:
+    needs: validate
+    environment: issue-viability-mainnet
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: npm
+      - run: npm ci
+      - run: node scripts/verify-config.mjs mainnet
+      - name: Deploy explicitly approved mainnet commit
+        env:
+          MAINNET_DEPLOYMENT_APPROVED: 'true'
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: node scripts/wrangler-run.mjs deploy mainnet

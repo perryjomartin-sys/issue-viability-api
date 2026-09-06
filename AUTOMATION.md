@@ -29,12 +29,18 @@ the package script. It extracts the actual total and requires every test to
 pass (no skipped/cancelled tests counted as success). No historical count is
 used as a gate. Automation regression tests use offline fetch stubs.
 
-`verify-config.mjs` parses JSONC and checks x402/Bazaar flags, price, Worker
-entrypoint/name, required DO/KV bindings and the payment module's network
-constant/string literals. Alternate environments, custom build commands and
-network/chain variable overrides are rejected. Errors never print config
-values. This deterministic drift guard complements the existing payment
-boundary tests; it cannot prove arbitrary future code is safe without review.
+`verify-config.mjs` parses JSONC and checks the exact Sepolia and separately
+named mainnet profiles: network, native USDC, facilitator, `$0.005`, approval
+flag, Worker identity, and isolated DO/KV bindings. Errors never print config
+values. `audit-facilitator-support.mjs` checks parsed `kinds[].network` values
+with exact equality; it never infers `eip155:8453` from `eip155:84532`.
+
+`.github/workflows/deploy-mainnet.yml` is `workflow_dispatch` only. It requires
+the immutable 40-character event SHA and `ENABLE_BASE_MAINNET_8453`, validates
+the mainnet profile, tests, typechecks, checks whitespace, and performs only a
+Wrangler dry-run before the dedicated `issue-viability-mainnet` environment
+approval. It does not run from a push. The all-zero mainnet KV placeholder makes
+deployment fail closed until isolated Cloudflare resources are deliberately set.
 
 `wrangler-run.mjs dry-run` invokes the locked CLI with `deploy --dry-run`:
 bundle only, no upload/deployment. Raw Wrangler output is suppressed, including

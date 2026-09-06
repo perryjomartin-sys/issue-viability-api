@@ -26,20 +26,25 @@ export function sanitiseWranglerDiagnostic(output, apiToken = process.env.CLOUDF
 
 function main() {
   const mode = process.argv[2];
-  if (!['dry-run', 'deploy'].includes(mode) || process.argv.length !== 3) process.exit(2);
+  const target = process.argv[3] ?? 'sepolia';
+  if (!['dry-run', 'deploy'].includes(mode) || !['sepolia', 'mainnet'].includes(target) || process.argv.length > 4) process.exit(2);
   // Deploy is intentionally callable only from the explicitly dispatched production job.
-  if (mode === 'deploy' && (process.env.GITHUB_ACTIONS !== 'true' || process.env.GITHUB_EVENT_NAME !== 'workflow_dispatch' || process.env.GITHUB_REF !== 'refs/heads/master' || process.env.PRODUCTION_APPROVED !== 'true' || !process.env.CLOUDFLARE_API_TOKEN || !process.env.CLOUDFLARE_ACCOUNT_ID)) {
+  const approval = target === 'mainnet' ? process.env.MAINNET_DEPLOYMENT_APPROVED : process.env.PRODUCTION_APPROVED;
+  if (mode === 'deploy' && (process.env.GITHUB_ACTIONS !== 'true' || process.env.GITHUB_EVENT_NAME !== 'workflow_dispatch' || process.env.GITHUB_REF !== 'refs/heads/master' || approval !== 'true' || !process.env.CLOUDFLARE_API_TOKEN || !process.env.CLOUDFLARE_ACCOUNT_ID)) {
     console.error('Deployment context/credentials missing');
     process.exit(1);
   }
   const args = ['node_modules/wrangler/bin/wrangler.js', 'deploy', '--config', 'wrangler.jsonc'];
+  if (target === 'mainnet') args.push('--env', 'mainnet');
   if (mode === 'dry-run') args.push('--dry-run');
   // Capture all Wrangler output: bindings and configuration are not logged on success.
   const run = spawnSync(process.execPath, args, {
     encoding: 'utf8', maxBuffer: 16 * 1024 * 1024,
     env: { ...process.env, WRANGLER_SEND_METRICS: 'false', CI: 'true' },
   });
-  if (run.error || run.status !== 0) {
+  // Some constrained local sandboxes report EPERM after a child has completed
+  // successfully (status 0). The exit status is authoritative in that case.
+  if (run.status !== 0) {
     console.error(`Wrangler ${mode}: FAIL\n${sanitiseWranglerDiagnostic(`${run.stderr ?? ''}\n${run.stdout ?? ''}`)}`);
     process.exit(1);
   }
