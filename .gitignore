@@ -11,3 +11,4 @@ dist/
 
 # Local mainnet CDP credentials
 .env.x402-mainnet
+cdp_api_key.json

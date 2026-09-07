@@ -1,0 +1,114 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Issue Viability API",
+    "version": "0.1.0",
+    "description": "x402-protected assessments for whether a public GitHub issue is worth implementing."
+  },
+  "servers": [
+    { "url": "https://issue-viability-api-mainnet.agentactiongateway.workers.dev" }
+  ],
+  "paths": {
+    "/health": {
+      "get": {
+        "summary": "Get service and payment-network health",
+        "responses": {
+          "200": {
+            "description": "Health status",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/Health" } }
+            }
+          }
+        }
+      }
+    },
+    "/v1/check": {
+      "post": {
+        "summary": "Assess a public GitHub issue",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": { "schema": { "$ref": "#/components/schemas/CheckRequest" } }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Paid assessment",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/Assessment" } }
+            }
+          },
+          "400": { "description": "Invalid request body" },
+          "402": {
+            "description": "x402 payment required",
+            "headers": {
+              "payment-required": {
+                "description": "Base64-encoded x402 V2 payment requirement.",
+                "schema": { "type": "string" }
+              }
+            },
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/PaymentRequired" } }
+            }
+          },
+          "404": { "description": "Repository or issue not found" },
+          "422": { "description": "Requested number is a pull request" },
+          "502": { "description": "GitHub upstream unavailable" },
+          "503": { "description": "Safe GitHub rate-limit floor unavailable" }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "CheckRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["repo", "issue"],
+        "properties": {
+          "repo": { "type": "string", "description": "Public GitHub repository as owner/name", "examples": ["cli/cli"] },
+          "issue": { "type": "integer", "minimum": 1, "examples": [14297] }
+        }
+      },
+      "PaymentRequired": {
+        "type": "object",
+        "required": ["error", "detail", "price", "network"],
+        "properties": {
+          "error": { "const": "payment_required" },
+          "detail": { "type": "string" },
+          "price": { "const": "$0.005" },
+          "network": { "const": "eip155:8453" }
+        }
+      },
+      "Health": {
+        "type": "object",
+        "required": ["status", "service", "version", "upstream", "payments", "utc_date"],
+        "properties": {
+          "status": { "const": "ok" },
+          "service": { "const": "issue-viability-api" },
+          "version": { "type": "string" },
+          "upstream": { "type": "string", "enum": ["github", "unconfigured", "fixtures"] },
+          "payments": { "const": "x402:eip155:8453" },
+          "utc_date": { "type": "string", "format": "date" }
+        }
+      },
+      "Assessment": {
+        "type": "object",
+        "required": ["issue_state", "assigned", "open_competing_prs", "recent_competitors", "repo_active", "last_activity", "risk", "recommendation", "reasons", "data_quality", "checked_at"],
+        "properties": {
+          "issue_state": { "enum": ["open", "closed"] },
+          "assigned": { "type": "boolean" },
+          "open_competing_prs": { "type": "integer", "minimum": 0 },
+          "recent_competitors": { "type": "integer", "minimum": 0 },
+          "repo_active": { "type": "boolean" },
+          "last_activity": { "type": "string", "format": "date-time" },
+          "risk": { "enum": ["low", "medium", "high"] },
+          "recommendation": { "enum": ["GO", "CAUTION", "REJECT"] },
+          "reasons": { "type": "array", "items": { "type": "string" } },
+          "data_quality": { "enum": ["ok", "partial", "stale"] },
+          "checked_at": { "type": "string", "format": "date" }
+        }
+      }
+    }
+  }
+}
