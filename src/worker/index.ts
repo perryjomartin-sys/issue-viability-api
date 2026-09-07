@@ -12,13 +12,13 @@
  * absent (e.g. a `wrangler dev` run without it configured), `createApp` falls
  * back to its default isolate-local `MemoryCache` rather than failing.
  */
-import { createApp } from "../app.ts";
+import { createApp, type AppDeps, type AppEnv } from "../app.ts";
 import { durableObjectRateBudget, type DurableObjectNamespace } from "./rate-budget-do.ts";
 import { KVCache, type KVNamespace } from "./kv-cache.ts";
 
 export { RateBudgetDO } from "./rate-budget-do.ts";
 
-interface Env {
+export interface Env {
   GITHUB_TOKEN?: string;
   X402_ENABLED?: string;
   X402_NETWORK?: string;
@@ -42,34 +42,43 @@ interface ExecutionContext {
 }
 
 /** Built once per isolate, reused across requests. */
-let app: ReturnType<typeof createApp> | undefined;
+export function appEnvFromWorkerEnv(env: Env): AppEnv {
+  return {
+    GITHUB_TOKEN: env.GITHUB_TOKEN,
+    X402_ENABLED: env.X402_ENABLED,
+    X402_NETWORK: env.X402_NETWORK,
+    X402_ASSET: env.X402_ASSET,
+    X402_PAY_TO: env.X402_PAY_TO,
+    X402_FACILITATOR_URL: env.X402_FACILITATOR_URL,
+    X402_PRICE: env.X402_PRICE,
+    X402_RESOURCE_URL: env.X402_RESOURCE_URL,
+    X402_BAZAAR: env.X402_BAZAAR,
+    X402_MAINNET_APPROVED: env.X402_MAINNET_APPROVED,
+    CDP_API_KEY_ID: env.CDP_API_KEY_ID,
+    CDP_API_KEY_SECRET: env.CDP_API_KEY_SECRET,
+  };
+}
 
-export default {
-  fetch(request: Request, env: Env, ctx: ExecutionContext): Response | Promise<Response> {
-    if (!app) {
-      app = createApp(
-        {
-          GITHUB_TOKEN: env.GITHUB_TOKEN,
-          X402_ENABLED: env.X402_ENABLED,
-          X402_NETWORK: env.X402_NETWORK,
-          X402_ASSET: env.X402_ASSET,
-          X402_PAY_TO: env.X402_PAY_TO,
-          X402_FACILITATOR_URL: env.X402_FACILITATOR_URL,
-          X402_PRICE: env.X402_PRICE,
-          X402_RESOURCE_URL: env.X402_RESOURCE_URL,
-          X402_BAZAAR: env.X402_BAZAAR,
-          X402_MAINNET_APPROVED: env.X402_MAINNET_APPROVED,
-          CDP_API_KEY_ID: env.CDP_API_KEY_ID,
-          CDP_API_KEY_SECRET: env.CDP_API_KEY_SECRET,
-        },
-        {
-          rateBudget: durableObjectRateBudget(env.RATE_BUDGET),
-          cache: env.VIABILITY_CACHE ? new KVCache(env.VIABILITY_CACHE) : undefined,
-        },
-      );
-    }
-    // `ctx` (waitUntil / passThroughOnException) is unused by our handlers.
-    void ctx;
-    return app.fetch(request, env as unknown as Record<string, unknown>);
-  },
-};
+/** A fresh app cache per Worker isolate; exported to exercise the runtime Env bridge. */
+export function createWorkerHandler(overrides: Pick<AppDeps, "facilitatorClient"> = {}) {
+  let app: ReturnType<typeof createApp> | undefined;
+  return {
+    fetch(request: Request, env: Env, ctx: ExecutionContext): Response | Promise<Response> {
+      if (!app) {
+        app = createApp(
+          appEnvFromWorkerEnv(env),
+          {
+            ...overrides,
+            rateBudget: durableObjectRateBudget(env.RATE_BUDGET),
+            cache: env.VIABILITY_CACHE ? new KVCache(env.VIABILITY_CACHE) : undefined,
+          },
+        );
+      }
+      // `ctx` (waitUntil / passThroughOnException) is unused by our handlers.
+      void ctx;
+      return app.fetch(request, env as unknown as Record<string, unknown>);
+    },
+  };
+}
+
+export default createWorkerHandler();

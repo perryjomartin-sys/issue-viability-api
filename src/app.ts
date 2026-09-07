@@ -187,7 +187,7 @@ export function createApp(env: AppEnv = {}, deps: AppDeps = {}): Hono {
       service: "issue-viability-api",
       version: "0.1.0",
       upstream: env.IVA_DEV_FIXTURES ? "fixtures" : env.GITHUB_TOKEN ? "github" : "unconfigured",
-      payments: paymentGateActive(paymentCfg) ? "x402:eip155:84532" : "disabled",
+      payments: paymentGateActive(paymentCfg) ? `x402:${paymentCfg.network}` : "disabled",
       utc_date: ymd(now()),
     }),
   );

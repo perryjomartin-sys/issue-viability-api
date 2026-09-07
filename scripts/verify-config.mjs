@@ -9,6 +9,7 @@ const MAINNET_USDC = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913';
 const X402_ORG = 'https://x402.org/facilitator';
 const CDP = 'https://api.cdp.coinbase.com/platform/v2/x402';
 const PRICE = '$0.005';
+const MAINNET_RESOURCE_URL = 'https://issue-viability-api-mainnet.agentactiongateway.workers.dev/v1/check';
 const KV_NAMESPACE_ID = /^[a-f0-9]{32}$/;
 const ALL_ZERO_KV_NAMESPACE_ID = '00000000000000000000000000000000';
 
@@ -60,7 +61,7 @@ export function verifyConfig(text, source, target = 'sepolia') {
   if (!mainnet || Object.keys(config.env).some(name => name !== 'mainnet')) throw Error();
   const mainnetVars = mainnet.vars ?? {};
   const sepoliaKv = config.kv_namespaces?.find(x => x.binding === 'VIABILITY_CACHE')?.id;
-  if (mainnet.name !== 'issue-viability-api-mainnet' || !hasRateBudget(mainnet.durable_objects?.bindings) || !hasInitialRateBudgetMigration(mainnet.migrations) || !hasIsolatedMainnetKv(mainnet.kv_namespaces, sepoliaKv) || mainnetVars.X402_ENABLED !== 'true' || mainnetVars.X402_NETWORK !== MAINNET || mainnetVars.X402_ASSET !== MAINNET_USDC || mainnetVars.X402_FACILITATOR_URL !== CDP || mainnetVars.X402_MAINNET_APPROVED !== 'true' || mainnetVars.X402_PRICE !== PRICE || mainnetVars.X402_BAZAAR !== 'true') throw Error();
+  if (mainnet.name !== 'issue-viability-api-mainnet' || !hasRateBudget(mainnet.durable_objects?.bindings) || !hasInitialRateBudgetMigration(mainnet.migrations) || !hasIsolatedMainnetKv(mainnet.kv_namespaces, sepoliaKv) || mainnetVars.X402_ENABLED !== 'true' || mainnetVars.X402_NETWORK !== MAINNET || mainnetVars.X402_ASSET !== MAINNET_USDC || mainnetVars.X402_FACILITATOR_URL !== CDP || mainnetVars.X402_RESOURCE_URL !== MAINNET_RESOURCE_URL || mainnetVars.X402_MAINNET_APPROVED !== 'true' || mainnetVars.X402_PRICE !== PRICE || mainnetVars.X402_BAZAAR !== 'true') throw Error();
 }
 
 try {

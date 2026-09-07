@@ -51,6 +51,7 @@
         "X402_NETWORK": "eip155:8453",
         "X402_ASSET": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
         "X402_FACILITATOR_URL": "https://api.cdp.coinbase.com/platform/v2/x402",
+        "X402_RESOURCE_URL": "https://issue-viability-api-mainnet.agentactiongateway.workers.dev/v1/check",
         "X402_MAINNET_APPROVED": "true",
         "X402_PRICE": "$0.005",
         "X402_BAZAAR": "true"
