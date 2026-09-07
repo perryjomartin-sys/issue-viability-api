@@ -60,6 +60,16 @@ jobs:
           cache: npm
       - run: npm ci
       - run: node scripts/verify-config.mjs mainnet
+      - name: Set approved mainnet runtime secrets
+        # The values exist only as GitHub Environment secrets and flow directly
+        # to Wrangler over stdin. Do not add a file, echo, or debug tracing here.
+        env:
+          CDP_API_KEY_ID: ${{ secrets.CDP_API_KEY_ID }}
+          CDP_API_KEY_SECRET: ${{ secrets.CDP_API_KEY_SECRET }}
+          X402_PAY_TO: ${{ secrets.X402_PAY_TO }}
+        run: |
+          set -o pipefail
+          node --input-type=module -e 'process.stdout.write(JSON.stringify(Object.fromEntries(["CDP_API_KEY_ID", "CDP_API_KEY_SECRET", "X402_PAY_TO"].map((name) => [name, process.env[name]]))))' | npx wrangler secret bulk --config wrangler.jsonc --env mainnet
       - name: Deploy explicitly approved mainnet commit
         env:
           MAINNET_DEPLOYMENT_APPROVED: 'true'

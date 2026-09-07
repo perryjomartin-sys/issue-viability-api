@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { verifyConfig } from '../scripts/verify-config.mjs';
 import {
   BASE_MAINNET,
   BASE_MAINNET_USDC,
@@ -75,4 +76,18 @@ test('ordinary and mainnet workflows preserve manual mainnet-only gates', () => 
   assert.match(mainnetWorkflow, /test "\$CONFIRM_SHA" = "\$GITHUB_SHA"/);
   assert.match(mainnetWorkflow, /verify-config\.mjs mainnet/);
   assert.match(mainnetWorkflow, /wrangler-run\.mjs dry-run mainnet/);
+  assert.match(mainnetWorkflow, /CDP_API_KEY_ID: \$\{\{ secrets\.CDP_API_KEY_ID \}\}/);
+  assert.match(mainnetWorkflow, /CDP_API_KEY_SECRET: \$\{\{ secrets\.CDP_API_KEY_SECRET \}\}/);
+  assert.match(mainnetWorkflow, /X402_PAY_TO: \$\{\{ secrets\.X402_PAY_TO \}\}/);
+  assert.match(mainnetWorkflow, /wrangler secret bulk --config wrangler\.jsonc --env mainnet/);
+  assert.doesNotMatch(mainnetWorkflow, /echo \$\{\{ secrets\.(?:CDP_API_KEY_ID|CDP_API_KEY_SECRET|X402_PAY_TO)/);
+});
+
+test('mainnet config requires a real isolated KV namespace and its own Durable Object migration', () => {
+  const config = readFileSync('wrangler.jsonc', 'utf8');
+  const source = readFileSync('src/payments.ts', 'utf8');
+  assert.doesNotThrow(() => verifyConfig(config, source, 'mainnet'));
+  assert.throws(() => verifyConfig(config.replace('38a6dfdb562544bbb09ac45d5d03a074', '00000000000000000000000000000000'), source, 'mainnet'));
+  assert.throws(() => verifyConfig(config.replace('38a6dfdb562544bbb09ac45d5d03a074', 'c40855d65e2b4a5c84620d791da34a9e'), source, 'mainnet'));
+  assert.throws(() => verifyConfig(config.replace('"migrations": [{ "tag": "v1", "new_sqlite_classes": ["RateBudgetDO"] }],\n      "kv_namespaces"', '"kv_namespaces"'), source, 'mainnet'));
 });

@@ -9,13 +9,28 @@ const MAINNET_USDC = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913';
 const X402_ORG = 'https://x402.org/facilitator';
 const CDP = 'https://api.cdp.coinbase.com/platform/v2/x402';
 const PRICE = '$0.005';
-const MAINNET_KV_PLACEHOLDER = '00000000000000000000000000000000';
+const KV_NAMESPACE_ID = /^[a-f0-9]{32}$/;
+const ALL_ZERO_KV_NAMESPACE_ID = '00000000000000000000000000000000';
 
 function hasRateBudget(bindings) {
   return bindings?.some(b => b.name === 'RATE_BUDGET' && b.class_name === 'RateBudgetDO');
 }
 function hasKv(bindings, id) {
   return bindings?.some(b => b.binding === 'VIABILITY_CACHE' && b.id === id);
+}
+function hasIsolatedMainnetKv(bindings, sepoliaId) {
+  const mainnetKv = bindings?.filter(b => b.binding === 'VIABILITY_CACHE') ?? [];
+  return mainnetKv.length === 1
+    && typeof mainnetKv[0].id === 'string'
+    && KV_NAMESPACE_ID.test(mainnetKv[0].id)
+    && mainnetKv[0].id !== ALL_ZERO_KV_NAMESPACE_ID
+    && mainnetKv[0].id !== sepoliaId;
+}
+function hasInitialRateBudgetMigration(migrations) {
+  return migrations?.some(m => m.tag === 'v1'
+    && Array.isArray(m.new_sqlite_classes)
+    && m.new_sqlite_classes.length === 1
+    && m.new_sqlite_classes[0] === 'RateBudgetDO');
 }
 function sourceStrings(source) {
   const file = ts.createSourceFile('payments.ts', source, ts.ScriptTarget.Latest, true);
@@ -38,14 +53,14 @@ export function verifyConfig(text, source, target = 'sepolia') {
   for (const value of [SEPOLIA, MAINNET, SEPOLIA_USDC, MAINNET_USDC, X402_ORG, CDP, PRICE]) {
     if (!sourceValues.has(value)) throw Error();
   }
-  if (config.name !== 'issue-viability-api' || config.main !== 'src/worker/index.ts' || !hasRateBudget(config.durable_objects?.bindings)) throw Error();
+  if (config.name !== 'issue-viability-api' || config.main !== 'src/worker/index.ts' || !hasRateBudget(config.durable_objects?.bindings) || !hasInitialRateBudgetMigration(config.migrations)) throw Error();
   const sepoliaVars = config.vars ?? {};
   if (sepoliaVars.X402_ENABLED !== 'true' || sepoliaVars.X402_NETWORK !== SEPOLIA || sepoliaVars.X402_ASSET !== SEPOLIA_USDC || sepoliaVars.X402_PRICE !== PRICE || sepoliaVars.X402_BAZAAR !== 'true' || sepoliaVars.X402_MAINNET_APPROVED !== undefined || sepoliaVars.X402_FACILITATOR_URL !== undefined || !hasKv(config.kv_namespaces, 'c40855d65e2b4a5c84620d791da34a9e')) throw Error();
   const mainnet = config.env?.mainnet;
   if (!mainnet || Object.keys(config.env).some(name => name !== 'mainnet')) throw Error();
   const mainnetVars = mainnet.vars ?? {};
-  if (mainnet.name !== 'issue-viability-api-mainnet' || !hasRateBudget(mainnet.durable_objects?.bindings) || !hasKv(mainnet.kv_namespaces, MAINNET_KV_PLACEHOLDER) || mainnetVars.X402_ENABLED !== 'true' || mainnetVars.X402_NETWORK !== MAINNET || mainnetVars.X402_ASSET !== MAINNET_USDC || mainnetVars.X402_FACILITATOR_URL !== CDP || mainnetVars.X402_MAINNET_APPROVED !== 'true' || mainnetVars.X402_PRICE !== PRICE || mainnetVars.X402_BAZAAR !== 'true') throw Error();
-  if (target === 'mainnet' && mainnet.kv_namespaces?.some(b => b.id === config.kv_namespaces?.find(x => x.binding === 'VIABILITY_CACHE')?.id)) throw Error();
+  const sepoliaKv = config.kv_namespaces?.find(x => x.binding === 'VIABILITY_CACHE')?.id;
+  if (mainnet.name !== 'issue-viability-api-mainnet' || !hasRateBudget(mainnet.durable_objects?.bindings) || !hasInitialRateBudgetMigration(mainnet.migrations) || !hasIsolatedMainnetKv(mainnet.kv_namespaces, sepoliaKv) || mainnetVars.X402_ENABLED !== 'true' || mainnetVars.X402_NETWORK !== MAINNET || mainnetVars.X402_ASSET !== MAINNET_USDC || mainnetVars.X402_FACILITATOR_URL !== CDP || mainnetVars.X402_MAINNET_APPROVED !== 'true' || mainnetVars.X402_PRICE !== PRICE || mainnetVars.X402_BAZAAR !== 'true') throw Error();
 }
 
 try {

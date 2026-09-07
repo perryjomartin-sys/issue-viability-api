@@ -31,18 +31,20 @@
     "X402_BAZAAR": "true"
   },
 
-  // Separate Worker identity and state namespace for Base mainnet. The all-zero
-  // KV id is an intentional fail-closed placeholder: replace it only after an
-  // isolated mainnet namespace has been created and recorded in a reviewed PR.
-  // It is not the Sepolia namespace and cannot resolve to a usable KV resource.
+  // Separate Worker identity and state namespace for Base mainnet. This KV
+  // namespace was created through the mainnet Wrangler environment; it is not
+  // the Sepolia namespace above.
   "env": {
     "mainnet": {
       "name": "issue-viability-api-mainnet",
       "durable_objects": {
         "bindings": [{ "name": "RATE_BUDGET", "class_name": "RateBudgetDO" }]
       },
+      // Migrations are explicit per Worker identity so the mainnet RATE_BUDGET
+      // class has isolated Durable Object storage from the default (Sepolia) Worker.
+      "migrations": [{ "tag": "v1", "new_sqlite_classes": ["RateBudgetDO"] }],
       "kv_namespaces": [
-        { "binding": "VIABILITY_CACHE", "id": "00000000000000000000000000000000" }
+        { "binding": "VIABILITY_CACHE", "id": "38a6dfdb562544bbb09ac45d5d03a074" }
       ],
       "vars": {
         "X402_ENABLED": "true",
