@@ -78,3 +78,26 @@ test('deploy wrapper refuses local deployment without starting Wrangler', () => 
   assert.equal(run.status, 1);
   assert.ok((run.error as NodeJS.ErrnoException | undefined)?.code === 'EPERM' || /context\/credentials missing/.test(run.stderr));
 });
+
+test('mainnet deploy wrapper fails closed without its atomic secrets file', () => {
+  const run = spawnSync(process.execPath, ['scripts/wrangler-run.mjs', 'deploy', 'mainnet'], {
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      GITHUB_ACTIONS: 'true', GITHUB_EVENT_NAME: 'workflow_dispatch', GITHUB_REF: 'refs/heads/master',
+      MAINNET_DEPLOYMENT_APPROVED: 'true', CLOUDFLARE_API_TOKEN: 'test-token', CLOUDFLARE_ACCOUNT_ID: 'test-account',
+    },
+  });
+  assert.equal(run.status, 1);
+  // The restricted local harness can discard child stderr with EPERM; CI
+  // exercises the diagnostic assertion directly.
+  assert.ok((run.error as NodeJS.ErrnoException | undefined)?.code === 'EPERM' || /Mainnet deployment secrets file missing/.test(run.stderr));
+});
+
+test('mainnet dry-run does not require runtime secrets and Sepolia has no secrets-file path', () => {
+  const wrapper = readFileSync('scripts/wrangler-run.mjs', 'utf8');
+  assert.match(wrapper, /mode === 'deploy' && target === 'mainnet'/);
+  assert.match(wrapper, /if \(target === 'mainnet'\) args\.push\('--env', 'mainnet'\)/);
+  assert.match(wrapper, /if \(mode === 'dry-run'\) args\.push\('--dry-run'\)/);
+  assert.match(wrapper, /if \(mode === 'deploy' && target === 'mainnet'\) args\.push\('--secrets-file', secretsFile\)/);
+});

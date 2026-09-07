@@ -60,19 +60,20 @@ jobs:
           cache: npm
       - run: npm ci
       - run: node scripts/verify-config.mjs mainnet
-      - name: Set approved mainnet runtime secrets
-        # The values exist only as GitHub Environment secrets and flow directly
-        # to Wrangler over stdin. Do not add a file, echo, or debug tracing here.
-        env:
-          CDP_API_KEY_ID: ${{ secrets.CDP_API_KEY_ID }}
-          CDP_API_KEY_SECRET: ${{ secrets.CDP_API_KEY_SECRET }}
-          X402_PAY_TO: ${{ secrets.X402_PAY_TO }}
-        run: |
-          set -o pipefail
-          node --input-type=module -e 'process.stdout.write(JSON.stringify(Object.fromEntries(["CDP_API_KEY_ID", "CDP_API_KEY_SECRET", "X402_PAY_TO"].map((name) => [name, process.env[name]]))))' | npx wrangler secret bulk --config wrangler.jsonc --env mainnet
       - name: Deploy explicitly approved mainnet commit
         env:
           MAINNET_DEPLOYMENT_APPROVED: 'true'
+          CDP_API_KEY_ID: ${{ secrets.CDP_API_KEY_ID }}
+          CDP_API_KEY_SECRET: ${{ secrets.CDP_API_KEY_SECRET }}
+          X402_PAY_TO: ${{ secrets.X402_PAY_TO }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        run: node scripts/wrangler-run.mjs deploy mainnet
+        run: |
+          set -eu
+          umask 077
+          IVA_MAINNET_SECRETS_FILE="$RUNNER_TEMP/issue-viability-mainnet-secrets-$$.json"
+          trap 'rm -f "$IVA_MAINNET_SECRETS_FILE"' EXIT
+          export IVA_MAINNET_SECRETS_FILE
+          node --input-type=module -e 'import { writeFileSync } from "node:fs"; writeFileSync(process.env.IVA_MAINNET_SECRETS_FILE, JSON.stringify(Object.fromEntries(["CDP_API_KEY_ID", "CDP_API_KEY_SECRET", "X402_PAY_TO"].map((name) => [name, process.env[name]]))));'
+          chmod 600 "$IVA_MAINNET_SECRETS_FILE"
+          node scripts/wrangler-run.mjs deploy mainnet

@@ -79,8 +79,17 @@ test('ordinary and mainnet workflows preserve manual mainnet-only gates', () => 
   assert.match(mainnetWorkflow, /CDP_API_KEY_ID: \$\{\{ secrets\.CDP_API_KEY_ID \}\}/);
   assert.match(mainnetWorkflow, /CDP_API_KEY_SECRET: \$\{\{ secrets\.CDP_API_KEY_SECRET \}\}/);
   assert.match(mainnetWorkflow, /X402_PAY_TO: \$\{\{ secrets\.X402_PAY_TO \}\}/);
-  assert.match(mainnetWorkflow, /wrangler secret bulk --config wrangler\.jsonc --env mainnet/);
-  assert.doesNotMatch(mainnetWorkflow, /echo \$\{\{ secrets\.(?:CDP_API_KEY_ID|CDP_API_KEY_SECRET|X402_PAY_TO)/);
+  assert.match(mainnetWorkflow, /CLOUDFLARE_API_TOKEN: \$\{\{ secrets\.CLOUDFLARE_API_TOKEN \}\}/);
+  assert.match(mainnetWorkflow, /CLOUDFLARE_ACCOUNT_ID: \$\{\{ secrets\.CLOUDFLARE_ACCOUNT_ID \}\}/);
+  assert.match(mainnetWorkflow, /umask 077/);
+  assert.match(mainnetWorkflow, /IVA_MAINNET_SECRETS_FILE/);
+  assert.match(mainnetWorkflow, /trap 'rm -f/);
+  assert.match(mainnetWorkflow, /chmod 600/);
+  assert.ok(!mainnetWorkflow.includes('wrangler secret bulk'));
+  assert.ok(!/\b(?:cat|echo|debug)\b.*(?:CDP_API_KEY_ID|CDP_API_KEY_SECRET|X402_PAY_TO)/.test(mainnetWorkflow));
+  const wrapper = readFileSync('scripts/wrangler-run.mjs', 'utf8');
+  assert.match(wrapper, /--secrets-file/);
+  assert.match(wrapper, /Mainnet deployment secrets file missing/);
 });
 
 test('mainnet config requires a real isolated KV namespace and its own Durable Object migration', () => {

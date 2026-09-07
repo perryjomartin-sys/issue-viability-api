@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { appendFileSync } from 'node:fs';
+import { appendFileSync, existsSync, statSync } from 'node:fs';
 
 const REDACTED = '[REDACTED]';
 const MAX_DIAGNOSTIC_LENGTH = 4_000;
@@ -34,9 +34,15 @@ function main() {
     console.error('Deployment context/credentials missing');
     process.exit(1);
   }
+  const secretsFile = process.env.IVA_MAINNET_SECRETS_FILE;
+  if (mode === 'deploy' && target === 'mainnet' && (!secretsFile || !existsSync(secretsFile) || !statSync(secretsFile).isFile())) {
+    console.error('Mainnet deployment secrets file missing');
+    process.exit(1);
+  }
   const args = ['node_modules/wrangler/bin/wrangler.js', 'deploy', '--config', 'wrangler.jsonc'];
   if (target === 'mainnet') args.push('--env', 'mainnet');
   if (mode === 'dry-run') args.push('--dry-run');
+  if (mode === 'deploy' && target === 'mainnet') args.push('--secrets-file', secretsFile);
   // Capture all Wrangler output: bindings and configuration are not logged on success.
   const run = spawnSync(process.execPath, args, {
     encoding: 'utf8', maxBuffer: 16 * 1024 * 1024,
