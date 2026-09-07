@@ -101,3 +101,21 @@ test('mainnet dry-run does not require runtime secrets and Sepolia has no secret
   assert.match(wrapper, /if \(mode === 'dry-run'\) args\.push\('--dry-run'\)/);
   assert.match(wrapper, /if \(mode === 'deploy' && target === 'mainnet'\) args\.push\('--secrets-file', secretsFile\)/);
 });
+
+test('mainnet diagnostics workflow is manual, read-only, and redacts tail output', () => {
+  const workflow = readFileSync('.github/workflows/diagnose-mainnet.yml', 'utf8');
+  const diagnostic = readFileSync('scripts/diagnose-mainnet.mjs', 'utf8');
+  const tailSanitiser = readFileSync('scripts/sanitise-mainnet-tail.mjs', 'utf8');
+  assert.match(workflow, /workflow_dispatch:/);
+  assert.ok(!/^\s*push:/m.test(workflow));
+  assert.match(workflow, /CLOUDFLARE_API_TOKEN: \$\{\{ secrets\.CLOUDFLARE_API_TOKEN \}\}/);
+  assert.match(workflow, /CLOUDFLARE_ACCOUNT_ID: \$\{\{ secrets\.CLOUDFLARE_ACCOUNT_ID \}\}/);
+  assert.match(workflow, /timeout 45s npx wrangler tail/);
+  assert.ok(!/wrangler (?:deploy|versions upload|versions deploy|secret (?:put|bulk))/.test(workflow));
+  for (const command of ['deployments', 'status', 'deployments', 'list', 'versions', 'list', 'versions', 'view']) {
+    assert.ok(diagnostic.includes(command));
+  }
+  assert.match(diagnostic, /active_version_secret_presence/);
+  assert.match(tailSanitiser, /payment-signature/);
+  assert.match(tailSanitiser, /\[REDACTED\]/);
+});
