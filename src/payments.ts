@@ -5,10 +5,12 @@
  * deployment configuration only; no other network, asset, facilitator, or
  * price combination is accepted.
  *
- * The middleware fetches the facilitator's supported payment kinds on first use
- * (`syncFacilitatorOnStart` default), so a live unpaid request needs one call to
- * the facilitator `/supported` endpoint; verify/settle are called only on a paid
- * request. Tests inject a local `FacilitatorClient` stub to stay offline.
+ * Unpaid challenges are generated from this application's pinned route and
+ * capability configuration, not a live facilitator `/supported` request. A
+ * slow or unavailable `/supported` endpoint must not delay an ordinary 402.
+ * verify/settle still run against the real facilitator for supplied payments
+ * and remain fail closed. Tests inject a local `FacilitatorClient` stub to
+ * stay offline.
  *
  * This is an agent-first API: the optional `@x402/paywall` browser wallet UI is
  * deliberately NOT installed. Non-browser clients get a JSON 402; a browser hit
@@ -224,6 +226,32 @@ export function buildRoutes(cfg: PaymentConfig): RoutesConfig {
 }
 
 /**
+ * `@x402/hono` 2.24.0 exposes `syncFacilitatorOnStart=false`, but its own
+ * `processHTTPRequest()` still needs the resource server's supported-kind map
+ * to build even an unpaid challenge. Seed the only approved capability locally
+ * so middleware initialization never makes an external `/supported` call.
+ *
+ * The real facilitator remains the sole authority for `verify` and `settle`.
+ * Thus an unavailable facilitator cannot grant access or settle a payment.
+ */
+function facilitatorWithPinnedChallengeSupport(
+  facilitator: FacilitatorClient,
+  cfg: PaymentConfig,
+): FacilitatorClient {
+  return {
+    async getSupported() {
+      return {
+        kinds: [{ x402Version: 2, scheme: "exact", network: cfg.network }],
+        extensions: [],
+        signers: {},
+      };
+    },
+    verify: facilitator.verify.bind(facilitator),
+    settle: facilitator.settle.bind(facilitator),
+  };
+}
+
+/**
  * Register x402 lifecycle observability on `resourceServer` via its public
  * hook API (`onBeforeVerify` / `onAfterVerify` / `onVerifyFailure` /
  * `onBeforeSettle` / `onAfterSettle` / `onSettleFailure`). These are the
@@ -293,7 +321,7 @@ export function installPaymentGate(
   const facilitator = facilitatorClient ?? (cfg.network === BASE_MAINNET
     ? new HTTPFacilitatorClient(createFacilitatorConfig(cfg.cdpApiKeyId, cfg.cdpApiKeySecret))
     : new HTTPFacilitatorClient({ url: cfg.facilitatorUrl }));
-  const resourceServer = new x402ResourceServer(facilitator).register(
+  const resourceServer = new x402ResourceServer(facilitatorWithPinnedChallengeSupport(facilitator, cfg)).register(
     cfg.network,
     new ExactEvmScheme(),
   );
@@ -316,5 +344,7 @@ export function installPaymentGate(
   });
 
   // No paywallConfig / custom paywall provider — agent-first, no browser wallet UI.
+  // The locally seeded capability makes this startup sync synchronous with no
+  // facilitator I/O; paid verify and settlement still use the real client.
   app.use(paymentMiddleware(buildRoutes(cfg), resourceServer));
 }

@@ -108,6 +108,92 @@ async function assertRejectedCleanly(
 }
 
 describe("x402 boundary hardening", () => {
+  it("a hung facilitator /supported call cannot delay an unpaid 402 or touch protected resources", async () => {
+    let getSupportedCalls = 0;
+    let verifyCalls = 0;
+    let settleCalls = 0;
+    let cacheGets = 0;
+    let cacheSets = 0;
+    let githubCalls = 0;
+    let budgetCalls = 0;
+    const backingBudget = readyBudget();
+    const cache = {
+      async get() {
+        cacheGets++;
+        return undefined;
+      },
+      async set() {
+        cacheSets++;
+      },
+    };
+    const budget = {
+      async reserveLiveCall(nowMs: number) {
+        budgetCalls++;
+        return backingBudget.reserveLiveCall(nowMs);
+      },
+      async reconcile(...args: Parameters<MemoryRateBudget["reconcile"]>) {
+        budgetCalls++;
+        return backingBudget.reconcile(...args);
+      },
+      async recover(...args: Parameters<MemoryRateBudget["recover"]>) {
+        budgetCalls++;
+        return backingBudget.recover(...args);
+      },
+    };
+    const facilitator = {
+      getSupported() {
+        getSupportedCalls++;
+        return new Promise<never>(() => {}); // deterministic hung /supported
+      },
+      async verify() {
+        verifyCalls++;
+        return { isValid: false, invalidReason: "unreachable" };
+      },
+      async settle() {
+        settleCalls++;
+        return { success: false, errorReason: "unreachable" };
+      },
+    } as any;
+    const app = createApp(
+      { X402_ENABLED: "true", X402_PAY_TO: PAY_TO, X402_RESOURCE_URL: "https://example.com/v1/check" },
+      {
+        now: () => TODAY,
+        facilitatorClient: facilitator,
+        rateBudget: budget,
+        cache,
+        signalSource: async () => {
+          githubCalls++;
+          return makeSignals();
+        },
+      },
+    );
+    const budgetBefore = backingBudget.snapshot();
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    const responseOrTimeout = await Promise.race([
+      post(app, { repo: "cli/cli", issue: 14297 }),
+      new Promise<"timed_out">((resolve) => {
+        timeoutHandle = setTimeout(() => resolve("timed_out"), 100);
+      }),
+    ]);
+    if (timeoutHandle) clearTimeout(timeoutHandle);
+
+    expect(responseOrTimeout).not.toBe("timed_out");
+    const res = responseOrTimeout as Response;
+    expect(res.status).toBe(402);
+    const body = (await res.json()) as any;
+    expect(body.network).toBe("eip155:84532");
+    expect(body.price).toBe("$0.005");
+    expect(body.recommendation).toBeUndefined();
+    expect(getSupportedCalls).toBe(0);
+    expect(verifyCalls).toBe(0);
+    expect(settleCalls).toBe(0);
+    expect(githubCalls).toBe(0);
+    expect(cacheGets).toBe(0);
+    expect(cacheSets).toBe(0);
+    expect(budgetCalls).toBe(0);
+    expect(backingBudget.snapshot()).toEqual(budgetBefore);
+  });
+
   it("no payment header => 402, budget and cache untouched", async () => {
     const h = harness();
     const before = h.budget.snapshot();
